@@ -281,16 +281,21 @@ const server = http.createServer((req, res) => {
 });
 
 // Bind to 0.0.0.0 for LAN smartphone access
-server.listen(PORT, '0.0.0.0', () => {
-  const ips = getLocalIpAddresses();
-  console.log("\n============================================================");
-  console.log("🌸 お節会 浜松 (Osekkai Hamamatsu) バックエンド＆Webサーバー起動！");
-  console.log("============================================================");
-  console.log(`💻 PCブラウザ用アクセス:   http://localhost:${PORT}/`);
-  if (ips.length > 0) {
-    ips.forEach(ip => {
-      console.log(`📲 スマホ用アクセス (Wi-Fi): http://${ip}:${PORT}/`);
-    });
-  }
-  console.log("============================================================\n");
-});
+if (!process.env.VERCEL) {
+  server.listen(PORT, '0.0.0.0', () => {
+    const ips = getLocalIpAddresses();
+    console.log("\n============================================================");
+    console.log("🌸 お節会 浜松 (Osekkai Hamamatsu) バックエンド＆Webサーバー起動！");
+    console.log("============================================================");
+    console.log(`💻 PCブラウザ用アクセス:   http://localhost:${PORT}/`);
+    if (ips.length > 0) {
+      ips.forEach(ip => {
+        console.log(`📲 スマホ用アクセス (Wi-Fi): http://${ip}:${PORT}/`);
+      });
+    }
+    console.log("============================================================\n");
+  });
+}
+
+module.exports = server;
+
