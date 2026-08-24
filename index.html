@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>お節会 浜松（おせっかい浜松）| 子ども食堂応援・地域助け合いアプリ</title>
+  <meta name="description" content="浜松市での日常の困りごと（買い物・荷物・家事・付き添い）を相互助け合いで解決。お礼の500円は全額子ども食堂の運営資金へ。双方向の身元確認とプライバシー保護で安心。">
+  
+  <!-- PWA Mobile App Manifest & Theme -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#059669">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="お節会浜松">
+
+  <!-- Fonts & Icons -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;800;900&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  
+  <!-- LINE LIFF SDK & Config -->
+  <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <script src="line_config.js"></script>
+
+  <link rel="stylesheet" href="index.css">
+</head>
+<body>
+
+  <!-- App Header -->
+  <header class="app-header">
+    <div class="nav-container">
+      <a href="#" class="logo-group" id="logoLink">
+        <div class="logo-icon">
+          <i class="fa-solid fa-hand-holding-heart"></i>
+        </div>
+        <div>
+          <div class="logo-title">お節会 浜松 <span style="font-size: 0.75em; font-weight: 500; opacity: 0.85;">(おせっかい)</span></div>
+          <div class="logo-subtitle">子ども食堂応援ワンコインプラットフォーム</div>
+        </div>
+      </a>
+
+      <div class="header-controls">
+        <button class="btn-toggle-mode" id="btnLineLogin" style="background: #06c755; color: white; border: none; font-weight: 800;">
+          <i class="fa-brands fa-line" style="font-size: 1.1rem;"></i>
+          <span id="lineStatusLabel">LINE連携</span>
+        </button>
+
+        <button class="btn-toggle-mode" id="btnResetData" style="background: #ef4444; color: white; border: none; font-weight: 800;" title="本番スタート用にデータ（給食数・投稿）を0から初期化します">
+          <i class="fa-solid fa-rotate-left"></i>
+          <span>本番用にデータ初期化</span>
+        </button>
+
+        <button class="btn-toggle-mode" id="toggleSeniorMode" title="大きな文字とシンプルな画面に切替">
+          <i class="fa-solid fa-glasses"></i>
+          <span id="seniorModeLabel">シニア・かんたん表示モード</span>
+        </button>
+
+        <button class="btn-help-accept" id="openCreateTaskBtn" style="background: var(--accent); color: var(--text-main);">
+          <i class="fa-solid fa-plus-circle"></i> 助けてほしい（困りごと投稿）
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Hero Impact Counter Banner -->
+  <section class="hero-impact-banner">
+    <div class="impact-card">
+      <div class="impact-info">
+        <h2>
+          <i class="fa-solid fa-utensils"></i>
+          みんなの助け合いで子ども食堂を応援！
+          <span class="impact-badge-tag">NPO法人連携 100%全額寄付</span>
+        </h2>
+        <p style="font-size: 0.95rem; opacity: 0.95;">
+          助け合いのお礼（500円）は全額、浜松市内の子ども食堂の食材費・運営費に充てられています。
+        </p>
+
+        <div class="impact-counter-box">
+          <span class="impact-number" id="mealCounter">0</span>
+          <span class="impact-unit">食分の笑顔を子どもたちへ送りました！</span>
+        </div>
+
+        <div>
+          <div style="display: flex; justify-content: space-between; font-size: 0.8rem; opacity: 0.9;">
+            <span>今月の目標：1,500食分</span>
+            <span>達成率：<span id="targetPercentLabel">0%</span></span>
+          </div>
+          <div class="progress-bar-bg">
+            <div class="progress-bar-fill" id="progressBarFill" style="width: 0%;"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="impact-actions">
+        <button class="btn-hero-action" id="openNpoModalBtn">
+          <i class="fa-solid fa-heart-pulse" style="color: var(--secondary);"></i>
+          子ども食堂の活動報告を見る
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Main Content Layout -->
+  <main class="main-wrapper">
+
+    <!-- Sidebar: Safety, Mutual ID, Category Filters -->
+    <aside class="sidebar-panel">
+
+      <!-- Mutual Identity Verification Box -->
+      <div class="card-glass">
+        <h3 class="panel-title">
+          <i class="fa-solid fa-shield-halved" style="color: var(--primary);"></i>
+          双方向の身元確認ステータス
+        </h3>
+        <p style="font-size: 0.82rem; color: var(--text-muted);">
+          助ける人も・助けてほしい人も身分証（マイナンバー/免許証等）で認証される安心設計です。
+        </p>
+
+        <div class="status-badge-list">
+          <div class="status-item">
+            <span><i class="fa-solid fa-user-check"></i> あなたの依頼者認証</span>
+            <span class="status-unverified" id="requesterStatusBadge">
+              <i class="fa-solid fa-circle-xmark"></i> 未認証
+            </span>
+          </div>
+
+          <div class="status-item">
+            <span><i class="fa-solid fa-handshake-angle"></i> あなたのサポーター認証</span>
+            <span class="status-unverified" id="helperStatusBadge">
+              <i class="fa-solid fa-circle-xmark"></i> 未認証
+            </span>
+          </div>
+        </div>
+
+        <button class="btn-verify" id="openVerifyModalBtn">
+          <i class="fa-solid fa-id-card"></i> 本人確認書類の更新・設定
+        </button>
+      </div>
+
+      <!-- Family Guardian Alert Notification Simulation -->
+      <div class="card-glass" style="background: #f0f9ff; border-color: rgba(2, 132, 199, 0.3);">
+        <h3 class="panel-title" style="color: var(--info); border-color: #bae6fd;">
+          <i class="fa-solid fa-bell"></i> ご家族安心見守り通知
+        </h3>
+        <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0.75rem;">
+          作業の開始・完了時にご家族（LINE/メール）へ見守り通知が送信されます。
+        </p>
+
+        <div id="familyNotificationLog" style="font-size: 0.8rem; background: white; padding: 0.6rem; border-radius: var(--radius-sm); border: 1px solid #e0f2fe;">
+          <div style="color: var(--primary); font-weight: 700;">
+            <i class="fa-solid fa-paper-plane"></i> 見守り通知連携中
+          </div>
+          <div>助け合い開始時に見守り家族へ完了レポートが届きます</div>
+        </div>
+      </div>
+
+      <!-- Category Filter List -->
+      <div class="card-glass">
+        <h3 class="panel-title">
+          <i class="fa-solid fa-shapes" style="color: var(--accent-dark);"></i>
+          困りごとカテゴリー
+        </h3>
+        
+        <div class="category-list" id="categoryFilterContainer">
+          <button class="cat-btn active" data-cat="all">
+            <span class="cat-icon">✨</span>
+            <span>すべて表示</span>
+          </button>
+          <button class="cat-btn" data-cat="shopping">
+            <span class="cat-icon">🛒</span>
+            <span>お買い物・荷物持ち</span>
+          </button>
+          <button class="cat-btn" data-cat="housework">
+            <span class="cat-icon">💡</span>
+            <span>住まいの手伝い・草むしり</span>
+          </button>
+          <button class="cat-btn" data-cat="escort">
+            <span class="cat-icon">🚶</span>
+            <span>外出・病院の付き添い</span>
+          </button>
+          <button class="cat-btn" data-cat="childcare">
+            <span class="cat-icon">👶</span>
+            <span>子育てサポート・お迎え</span>
+          </button>
+          <button class="cat-btn" data-cat="chat">
+            <span class="cat-icon">🗣️</span>
+            <span>おしゃべり・見守り</span>
+          </button>
+        </div>
+      </div>
+
+    </aside>
+
+    <!-- Main Feed Section -->
+    <section>
+      
+      <!-- Feed Header with 500m Privacy Mesh Badge -->
+      <div class="feed-header">
+        <div class="feed-title-group">
+          <h3><i class="fa-solid fa-list-check" style="color: var(--primary);"></i> 浜松市内の助け合い募集一覧</h3>
+          <div class="feed-subtitle">手助けをして、子ども食堂にワンコインの笑顔を送りましょう</div>
+        </div>
+
+        <div class="location-privacy-badge">
+          <i class="fa-solid fa-user-shield"></i>
+          プライバシー保護：マッチング前は大まかなエリア（約500m範囲）のみ表示中
+        </div>
+      </div>
+
+      <!-- Hamamatsu Wards Interactive Map / Area Filter Bar -->
+      <div class="ward-map-container" style="background: white; border-radius: var(--radius-lg); padding: 1.25rem; margin-bottom: 1.5rem; border: 1px solid var(--border); box-shadow: var(--shadow-sm);">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+          <h4 style="font-weight: 800; font-size: 0.95rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text-main);">
+            <i class="fa-solid fa-map-location-dot" style="color: var(--primary);"></i>
+            浜松市 身近なエリア選択（旧7区・地域別）
+          </h4>
+          <span style="font-size: 0.8rem; color: var(--text-muted);">2024年の区再編に対応！慣れ親しんだ地域名で絞り込めます</span>
+        </div>
+
+        <div class="ward-pills-grid" id="wardFilterContainer">
+          <button class="ward-pill active" data-ward="all">
+            <span class="ward-name">浜松市全域</span>
+            <span class="ward-count" id="wardCountAll">0件</span>
+          </button>
+          <button class="ward-pill" data-ward="旧中区">
+            <span class="ward-name">📍 旧中区 (中央区)</span>
+            <span class="ward-count">0件</span>
+          </button>
+          <button class="ward-pill" data-ward="旧東区">
+            <span class="ward-name">📍 旧東区 (中央区)</span>
+            <span class="ward-count">0件</span>
+          </button>
+          <button class="ward-pill" data-ward="旧西区">
+            <span class="ward-name">📍 旧西区 (中央区)</span>
+            <span class="ward-count">0件</span>
+          </button>
+          <button class="ward-pill" data-ward="旧南区">
+            <span class="ward-name">📍 旧南区 (中央区)</span>
+            <span class="ward-count">0件</span>
+          </button>
+          <button class="ward-pill" data-ward="旧北区">
+            <span class="ward-name">📍 旧北区 (浜名/中央)</span>
+            <span class="ward-count">0件</span>
+          </button>
+          <button class="ward-pill" data-ward="旧浜北区">
+            <span class="ward-name">📍 旧浜北区 (浜名区)</span>
+            <span class="ward-count">0件</span>
+          </button>
+          <button class="ward-pill" data-ward="天竜区">
+            <span class="ward-name">📍 天竜区</span>
+            <span class="ward-count">0件</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Tasks Grid List Container -->
+      <div class="tasks-grid" id="tasksGrid">
+        <!-- Dynamically injected via app.js -->
+      </div>
+
+    </section>
+
+  </main>
+
+  <!-- Modals Section -->
+
+  <!-- Modal 1: Create Task Request Modal -->
+  <div class="modal-overlay" id="createTaskModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 class="modal-title">
+          <i class="fa-solid fa-pen-to-square" style="color: var(--primary);"></i>
+          困りごとを投稿する（助けてほしい）
+        </h3>
+        <button class="btn-close-modal">&times;</button>
+      </div>
+
+      <form id="createTaskForm">
+        <div class="form-group">
+          <label class="form-label">困りごとのカテゴリー</label>
+          <select class="form-select" id="taskCategorySelect" required>
+            <option value="shopping">🛒 お買い物・荷物持ち</option>
+            <option value="housework">💡 住まいの手伝い・電球交換・草むしり</option>
+            <option value="escort">🚶 外出・病院の付き添い</option>
+            <option value="childcare">👶 子育てサポート・お迎え</option>
+            <option value="chat">🗣️ おしゃべり・一人暮らしの見守り</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">困りごとのタイトル</label>
+          <input type="text" class="form-input" id="taskTitleInput" placeholder="例：高い場所の電球を交換してほしい（浜松市中区）" required>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">詳しい内容</label>
+          <textarea class="form-textarea" id="taskDescInput" rows="3" placeholder="脚立を使った作業が難しいため、電球の付け替えを手伝っていただける方を探しています。" required></textarea>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">お住まいの地域（公開時は大まかなエリアのみ表示されます）</label>
+          <select class="form-select" id="taskAreaSelect">
+            <option value="浜松市中央区（旧中区）">浜松市中央区（旧中区）</option>
+            <option value="浜松市中央区（旧東区）">浜松市中央区（旧東区）</option>
+            <option value="浜松市中央区（旧西区）">浜松市中央区（旧西区）</option>
+            <option value="浜松市中央区（旧南区）">浜松市中央区（旧南区）</option>
+            <option value="浜松市浜名区（旧北区）">浜松市浜名区（旧北区）</option>
+            <option value="浜松市浜名区（旧浜北区）">浜松市浜名区（旧浜北区）</option>
+            <option value="浜松市天竜区">浜松市天竜区</option>
+          </select>
+        </div>
+
+        <div class="form-group" style="background: var(--accent-light); padding: 1rem; border-radius: var(--radius-md); border: 1px solid rgba(245, 158, 11, 0.4);">
+          <div style="font-weight: 800; color: var(--accent-dark); margin-bottom: 0.25rem;">
+            <i class="fa-solid fa-coins"></i> お礼（手渡し現金 500円）
+          </div>
+          <div style="font-size: 0.85rem; color: var(--text-main);">
+            作業完了時、サポーターに手渡しで500円（または応援封筒）をお渡しください。この500円は全額「NPO法人 子ども食堂」へ寄付されます。
+          </div>
+        </div>
+
+        <button type="submit" class="btn-hero-action" style="width: 100%; background: var(--primary); color: white;">
+          <i class="fa-solid fa-paper-plane"></i> この内容で募集を公開する
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal 2: ID Verification Modal (eKYC My Number Card & Driver's License) -->
+  <div class="modal-overlay" id="verifyModal">
+    <div class="modal-card" style="max-width: 620px;">
+      <div class="modal-header">
+        <h3 class="modal-title">
+          <i class="fa-solid fa-id-card" style="color: var(--primary);"></i>
+          マイナンバーカード・身元確認（eKYC公的認証）
+        </h3>
+        <button class="btn-close-modal">&times;</button>
+      </div>
+
+      <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1.25rem; line-height: 1.5;">
+        安心・安全な助け合いのため、マイナンバーカードや運転免許証による相互身元認証を行っております。（※個人情報は暗号化され、本人確認目的以外には使用されません）
+      </p>
+
+      <div class="form-group">
+        <label class="form-label"><i class="fa-solid fa-file-contract" style="color: var(--primary);"></i> 提出する公的身分証明書を選択</label>
+        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.75rem;">
+          <label id="docLabelMynumber" style="background: var(--primary-light); border: 2px solid var(--primary); padding: 0.85rem; border-radius: var(--radius-md); cursor: pointer; display: flex; align-items: center; gap: 0.5rem; font-weight: 800; color: var(--primary-hover); transition: all 0.2s ease;">
+            <input type="radio" name="docType" value="mynumber" checked>
+            <span>🪪 マイナンバーカード</span>
+          </label>
+          <label id="docLabelLicense" style="background: white; border: 1.5px solid var(--border); padding: 0.85rem; border-radius: var(--radius-md); cursor: pointer; display: flex; align-items: center; gap: 0.5rem; font-weight: 700; color: var(--text-main); transition: all 0.2s ease;">
+            <input type="radio" name="docType" value="license">
+            <span>🚗 運転免許証</span>
+          </label>
+        </div>
+      </div>
+
+      <input type="file" id="fileInputFront" accept="image/*" capture="environment" style="display: none;">
+      <input type="file" id="fileInputBack" accept="image/*" capture="environment" style="display: none;">
+
+      <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; margin-bottom: 1.25rem;">
+        <label for="fileInputFront" class="id-upload-dropzone" id="idDropzoneFront" style="padding: 1.25rem; cursor: pointer; display: block;">
+          <i class="fa-solid fa-camera" style="font-size: 2rem; color: var(--primary); margin-bottom: 0.4rem;"></i>
+          <div style="font-weight: 800; font-size: 0.9rem;">【表面】を撮影・送信</div>
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;" id="idDropzoneFrontSub">外側カメラで顔写真面を撮影</div>
+        </label>
+
+        <label for="fileInputBack" class="id-upload-dropzone" id="idDropzoneBack" style="padding: 1.25rem; cursor: pointer; display: block;">
+          <i class="fa-solid fa-id-badge" style="font-size: 2rem; color: var(--primary); margin-bottom: 0.4rem;"></i>
+          <div style="font-weight: 800; font-size: 0.9rem;">【裏面】を撮影・送信</div>
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;" id="idDropzoneBackSub">外側カメラで個人番号面を撮影</div>
+        </label>
+      </div>
+
+      <div id="verificationSimResult" style="display: none; background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%); padding: 1.25rem; border-radius: var(--radius-md); text-align: center; border: 1.5px solid var(--primary);">
+        <div style="font-weight: 900; font-size: 1.15rem; color: #064e3b; margin-bottom: 0.4rem;" id="simResultTitle">
+          <i class="fa-solid fa-shield-check"></i> 公的身元確認 完了！
+        </div>
+        <div style="font-size: 0.85rem; color: #047857; line-height: 1.5;" id="simResultText">
+          身分証明書情報および浜松市住所が正常に照合されました。「相互身元認証済み」バッジが有効化されました。
+        </div>
+      </div>
+
+      <button class="btn-hero-action" id="btnSubmitEkyc" style="width: 100%; background: var(--primary); color: white; margin-top: 1rem;">
+        <i class="fa-solid fa-cloud-arrow-up"></i> マイナンバーカードで身元確認（eKYC認証実行）
+      </button>
+    </div>
+  </div>
+
+  <!-- Modal 2.5: Live Rear Camera Viewfinder Modal -->
+  <div class="modal-overlay" id="cameraModal">
+    <div class="modal-card" style="max-width: 520px; padding: 1.25rem; text-align: center;">
+      <div class="modal-header" style="margin-bottom: 0.75rem;">
+        <h3 class="modal-title" id="cameraModalTitle">📷 外側カメラでカード撮影</h3>
+        <button class="btn-close-modal" id="btnCloseCameraModal">&times;</button>
+      </div>
+
+      <div style="position: relative; width: 100%; height: 290px; background: #0f172a; border-radius: var(--radius-md); overflow: hidden; margin-bottom: 1rem; border: 2px solid var(--border);">
+        <video id="cameraVideo" autoplay playsinline style="width: 100%; height: 100%; object-fit: cover;"></video>
+        <div style="position: absolute; inset: 15px; border: 3px dashed #38bdf8; border-radius: 12px; pointer-events: none; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.2);">
+          <span style="color: white; font-weight: 800; font-size: 0.95rem; text-shadow: 0 2px 4px rgba(0,0,0,0.9);" id="cameraGuideText">枠内にカードを置いて撮影ボタンを押してください</span>
+        </div>
+      </div>
+      <canvas id="cameraCanvas" style="display: none;"></canvas>
+
+      <button class="btn-hero-action" id="btnTakeSnap" style="width: 100%; background: var(--primary); color: white; font-size: 1.2rem;">
+        <i class="fa-solid fa-camera"></i> 📸 写真を撮影する
+      </button>
+    </div>
+  </div>
+
+  <!-- Modal 3: Task Details & Two-Step Location Unlock Modal -->
+  <div class="modal-overlay" id="taskDetailModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 class="modal-title" id="modalTaskTitle">困りごとの詳細</h3>
+        <button class="btn-close-modal">&times;</button>
+      </div>
+
+      <div id="modalTaskBody">
+        <!-- Injected dynamically -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 4: Children's Cafeteria NPO Activity Report Modal -->
+  <div class="modal-overlay" id="npoModal">
+    <div class="modal-card" style="max-width: 650px;">
+      <div class="modal-header">
+        <h3 class="modal-title" style="color: var(--secondary);">
+          <i class="fa-solid fa-utensils"></i>
+          子ども食堂 応援活動レポート（浜松市連携）
+        </h3>
+        <button class="btn-close-modal">&times;</button>
+      </div>
+
+      <div class="npo-hero-image-container">
+        <img src="./kodomo_shokudo.png" alt="浜松市子ども食堂の笑顔" class="npo-report-img">
+        <div class="npo-image-caption">
+          <i class="fa-solid fa-camera"></i> 浜松市内の子ども食堂で、温かい夕食を囲む子どもたちの笑顔
+        </div>
+      </div>
+
+      <!-- Impact Metrics Grid -->
+      <div class="npo-metrics-grid">
+        <div class="npo-metric-card">
+          <div class="npo-metric-value" id="npoMetricMeals">0食</div>
+          <div class="npo-metric-label">届けた温かいご飯</div>
+        </div>
+        <div class="npo-metric-card">
+          <div class="npo-metric-value" id="npoMetricYen">0円</div>
+          <div class="npo-metric-label">市民の助け合い寄付額</div>
+        </div>
+        <div class="npo-metric-card">
+          <div class="npo-metric-value">14箇所</div>
+          <div class="npo-metric-label">支援中の市域子ども食堂</div>
+        </div>
+        <div class="npo-metric-card">
+          <div class="npo-metric-value" id="npoMetricSupporters">0名</div>
+          <div class="npo-metric-label">登録たすけあいサポーター</div>
+        </div>
+      </div>
+
+      <div class="npo-story-box">
+        <h4 style="font-weight: 800; color: var(--text-main); margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+          <i class="fa-solid fa-heart-circle-check" style="color: var(--primary);"></i>
+          ワンコイン（500円）が子どもたちの食卓に届くまで
+        </h4>
+        <p style="font-size: 0.88rem; color: var(--text-muted); line-height: 1.6;">
+          浜松市内で生まれた日常の「電球交換」「お買い物」「付き添い」の助け合い。感謝のお礼として手渡されるワンコイン500円は、全額が浜松市内の子ども食堂ネットワークを通じて地元産の新鮮野菜や米・肉の購入費に活用されています。
+        </p>
+
+        <div class="npo-testimonial-card">
+          <div class="testimonial-avatar">👵</div>
+          <div class="testimonial-content">
+            <div class="testimonial-name">浜松市中区 鈴木様（依頼者・82歳）</div>
+            <div class="testimonial-text">「高所の電球を付け替えていただき本当に助かりました。そのお礼の500円が地元の子供たちのご飯になると思うと、心まで温かくなります。」</div>
+          </div>
+        </div>
+
+        <div class="npo-testimonial-card" style="background: #f0fdf4; border-color: #bbf7d0;">
+          <div class="testimonial-avatar">🧒</div>
+          <div class="testimonial-content">
+            <div class="testimonial-name">子ども食堂参加の小学生・保護者の声</div>
+            <div class="testimonial-text">「みんなで食べるカレーライスと新鮮なお野菜がとっても美味しい！いつも応援してくれてありがとう！」</div>
+          </div>
+        </div>
+      </div>
+
+      <button class="btn-hero-action btn-close-modal" style="width: 100%; background: var(--secondary); color: white; margin-top: 1rem;">
+        <i class="fa-solid fa-check"></i> 活動レポートを閉じる
+      </button>
+    </div>
+  </div>
+
+  <!-- Modal 5: Matching Chat Modal (LINE-style & Senior Quick Buttons) -->
+  <div class="modal-overlay" id="chatModal">
+    <div class="modal-card" style="max-width: 550px; padding: 0; overflow: hidden; border-radius: var(--radius-lg);">
+      
+      <div class="chat-header">
+        <div style="display: flex; align-items: center; gap: 0.75rem;">
+          <div class="chat-avatar" id="chatAvatar">鈴</div>
+          <div>
+            <div class="chat-user-name" id="chatUserName">鈴木 ハツ子様</div>
+            <div class="chat-user-status">
+              <span class="online-indicator"></span> 認証済みサポーター・オンライン
+            </div>
+          </div>
+        </div>
+        <button class="btn-close-modal" style="background: rgba(255,255,255,0.2); color: white; border-radius: 50%; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border: none; font-size: 1.2rem; cursor: pointer;">&times;</button>
+      </div>
+
+      <div class="chat-context-bar" id="chatContextTitle">
+        📌 メッセージ
+      </div>
+
+      <div class="chat-messages-container" id="chatMessagesContainer">
+        <!-- Messages Injected via app.js -->
+      </div>
+
+      <div class="chat-quick-replies">
+        <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.4rem; font-weight: 700;">
+          ⚡ かんたんワンタップ返信（タップして送信）
+        </div>
+        <div class="quick-reply-scroll">
+          <button class="quick-reply-btn" onclick="sendQuickMessage('本日14時に伺います！よろしくお願いいたします。')">
+            🕒 本日14時に伺います
+          </button>
+          <button class="quick-reply-btn" onclick="sendQuickMessage('近所のスーパーに到着しました！')">
+            🛒 到着しました
+          </button>
+          <button class="quick-reply-btn" onclick="sendQuickMessage('作業が完了しました！500円をお預かりします。')">
+            ✨ 作業完了・お礼お受取り
+          </button>
+          <button class="quick-reply-btn" onclick="sendQuickMessage('ありがとうございます！助かります。')">
+            😊 ありがとうございます
+          </button>
+        </div>
+      </div>
+
+      <form id="chatInputForm" class="chat-input-bar">
+        <input type="text" id="chatInputText" class="chat-input" placeholder="メッセージを入力..." required>
+        <button type="submit" class="chat-send-btn">
+          <i class="fa-solid fa-paper-plane"></i>
+        </button>
+      </form>
+
+    </div>
+  </div>
+
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="app.js?v=20260823_v5"></script>
+</body>
+</html>

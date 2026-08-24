@@ -1,0 +1,21 @@
+{
+  "tasks": [],
+  "npoStats": {
+    "totalMealsServed": 0,
+    "totalDonationYen": 0,
+    "supportedCafeterias": 14,
+    "registeredSupporters": 0
+  },
+  "chatStore": {},
+  "autoReplies": [
+    "ご連絡ありがとうございます！お待ちしておりますね。",
+    "ありがとうございます！助かります。どうぞ気をつけてお越しください。",
+    "承知いたしました！お会いできるのを楽しみにしております。"
+  ],
+  "userVerifications": {
+    "defaultUser": {
+      "requester": false,
+      "helper": false
+    }
+  }
+}
