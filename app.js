@@ -157,21 +157,111 @@ function updateVerificationBadgesUI() {
   }
 }
 
+// Default Initial Hamamatsu Sample Tasks
+const INITIAL_SAMPLE_TASKS = [
+  {
+    id: "task-sample-1",
+    category: "housework",
+    categoryName: "💡 住まいの手伝い",
+    title: "高所の電球交換の手伝い（脚立作業）",
+    description: "高所の電球が切れてしまい、足腰が痛いため交換していただける方を募集します。電球は購入済みです。",
+    fuzzyLocation: "浜松市中央区（旧中区） (500m圏内)",
+    exactLocation: "浜松市中央区（旧中区） 葵東2丁目 15-8",
+    requesterName: "鈴木 ハツ子様 (身元認証済み)",
+    requesterVerified: true,
+    timeAgo: "10分前",
+    status: "open",
+    donationAmount: 500
+  },
+  {
+    id: "task-sample-2",
+    category: "shopping",
+    categoryName: "🛒 お買い物・荷物持ち",
+    title: "スーパーでの重い米・油の買い物付き添い",
+    description: "お米（5kg）と調味料を買いたいのですが、重くて持てないため車への荷物搬入を手伝ってほしいです。",
+    fuzzyLocation: "浜松市中央区（旧東区） (500m圏内)",
+    exactLocation: "浜松市中央区（旧東区） 和田町 340",
+    requesterName: "山田 太郎様 (身元認証済み)",
+    requesterVerified: true,
+    timeAgo: "30分前",
+    status: "open",
+    donationAmount: 500
+  },
+  {
+    id: "task-sample-3",
+    category: "escort",
+    categoryName: "🚶 外出・病院の付き添い",
+    title: "浜松医療センターへの通院付き添い・徒歩アシスト",
+    description: "病院での受付や車椅子移動のアシストをお願いしたいです。ゆっくり歩ける方ならどなたでも助かります。",
+    fuzzyLocation: "浜松市浜名区（旧浜北区） (500m圏内)",
+    exactLocation: "浜松市浜名区（旧浜北区） 貴布祢 120",
+    requesterName: "高橋 さくら様 (身元認証済み)",
+    requesterVerified: true,
+    timeAgo: "1時間前",
+    status: "open",
+    donationAmount: 500
+  }
+];
+
+function getStoredTasks() {
+  try {
+    const raw = localStorage.getItem("osekkai_tasks_store");
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return null;
+}
+
+function saveStoredTasks(tasks) {
+  try {
+    localStorage.setItem("osekkai_tasks_store", JSON.stringify(tasks));
+  } catch (e) {}
+}
+
 async function fetchTasks() {
   try {
     const res = await fetch("/api/tasks");
     if (res.ok) {
-      tasksState = await res.json();
-      renderTasks();
-      updateWardCounts();
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        tasksState = data;
+        saveStoredTasks(tasksState);
+        renderTasks();
+        updateWardCounts();
+        return;
+      }
     }
   } catch (err) {
-    console.warn("⚠️ API fetchTasks error:", err);
-    renderTasks();
+    console.warn("⚠️ API fetchTasks fallback to local storage:", err);
   }
+
+  // Fallback for Static Hosting (GitHub Pages / Vercel without backend server)
+  const local = getStoredTasks();
+  if (local && Array.isArray(local) && local.length > 0) {
+    tasksState = local;
+  } else {
+    tasksState = [...INITIAL_SAMPLE_TASKS];
+    saveStoredTasks(tasksState);
+  }
+  renderTasks();
+  updateWardCounts();
 }
 
 async function createNewTask(taskData) {
+  const newTask = {
+    id: "task-" + Date.now(),
+    category: taskData.category || "housework",
+    categoryName: taskData.categoryName || "💡 住まいの手伝い",
+    title: taskData.title,
+    description: taskData.description,
+    fuzzyLocation: `${taskData.area}（約500m圏内）`,
+    exactLocation: `${taskData.area} 登録住所`,
+    requesterName: lineUserProfile.displayName ? `${lineUserProfile.displayName}様` : "あなた (浜松市民・本人確認済み)",
+    requesterVerified: true,
+    timeAgo: "たった今",
+    status: "open",
+    donationAmount: 500
+  };
+
   try {
     const res = await fetch("/api/tasks", {
       method: "POST",
@@ -182,26 +272,19 @@ async function createNewTask(taskData) {
       const data = await res.json();
       if (data.task) {
         tasksState.unshift(data.task);
+        saveStoredTasks(tasksState);
+        renderTasks();
+        updateWardCounts();
+        return;
       }
     }
   } catch (err) {
-    console.warn("⚠️ API createNewTask error, falling back to client state:", err);
-    const newTask = {
-      id: "task-" + Date.now(),
-      category: taskData.category || "housework",
-      categoryName: taskData.categoryName || "💡 住まいの手伝い",
-      title: taskData.title,
-      description: taskData.description,
-      fuzzyLocation: `${taskData.area}（約500m圏内）`,
-      exactLocation: `${taskData.area} 登録住所`,
-      requesterName: "あなた (浜松市民・本人確認済み)",
-      requesterVerified: true,
-      timeAgo: "たった今",
-      status: "open",
-      donationAmount: 500
-    };
-    tasksState.unshift(newTask);
+    console.warn("⚠️ API createNewTask fallback to client state:", err);
   }
+
+  // Fallback for Static Hosting (GitHub Pages)
+  tasksState.unshift(newTask);
+  saveStoredTasks(tasksState);
   renderTasks();
   updateWardCounts();
 }
@@ -218,11 +301,13 @@ async function completeTaskApi(taskId) {
     }
   } catch (err) {
     console.warn("⚠️ API completeTask error:", err);
-    npoStatsState.totalMealsServed += 1;
-    npoStatsState.totalDonationYen += 500;
-    updateStatsUI();
   }
+
   tasksState = tasksState.filter(t => t.id !== taskId);
+  saveStoredTasks(tasksState);
+  npoStatsState.totalMealsServed = (npoStatsState.totalMealsServed || 0) + 1;
+  npoStatsState.totalDonationYen = (npoStatsState.totalDonationYen || 0) + 500;
+  updateStatsUI();
   renderTasks();
   updateWardCounts();
 }
