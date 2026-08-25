@@ -761,6 +761,21 @@ function setupEventListeners() {
         area: area
       });
 
+      // Reset filters so newly created task is 100% visible immediately
+      currentCategory = "all";
+      currentWard = "all";
+      if (categoryButtons) {
+        categoryButtons.forEach(b => b.classList.remove("active"));
+        document.querySelector('.cat-btn[data-cat="all"]')?.classList.add("active");
+      }
+      const wardPills = document.querySelectorAll(".ward-pill");
+      if (wardPills) {
+        wardPills.forEach(b => b.classList.remove("active"));
+        document.querySelector('.ward-pill[data-ward="all"]')?.classList.add("active");
+      }
+      renderTasks();
+      updateWardCounts();
+
       closeModal(createTaskModal);
       createTaskForm.reset();
       showToast("🎉 困りごとの募集を公開しました！サポーターのマッチングをお待ちください。");
