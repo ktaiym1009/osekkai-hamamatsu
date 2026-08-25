@@ -834,19 +834,7 @@ function setupEventListeners() {
     });
   }
 
-  if (idDropzoneFront) {
-    idDropzoneFront.addEventListener("click", (e) => {
-      e.preventDefault();
-      startRearCamera("front");
-    });
-  }
 
-  if (idDropzoneBack) {
-    idDropzoneBack.addEventListener("click", (e) => {
-      e.preventDefault();
-      startRearCamera("back");
-    });
-  }
 
   function handleFileSelected(file, target) {
     const selectedDocType = document.querySelector('input[name="docType"]:checked')?.value || "mynumber";
