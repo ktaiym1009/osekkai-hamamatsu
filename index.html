@@ -25,9 +25,9 @@
   
   <!-- LINE LIFF SDK & Config -->
   <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
-  <script src="line_config.js?v=20260825_v2"></script>
+  <script src="line_config.js?v=20260825_v3"></script>
 
-  <link rel="stylesheet" href="index.css?v=20260825_v2">
+  <link rel="stylesheet" href="index.css?v=20260825_v3">
 </head>
 <body>
 
@@ -358,20 +358,25 @@
         </div>
       </div>
 
-      <input type="file" id="fileInputFront" accept="image/*" style="display: none;">
-      <input type="file" id="fileInputBack" accept="image/*" style="display: none;">
+      <!-- Mobile Direct Camera Inputs (capture="environment" launches native camera) -->
+      <input type="file" id="fileInputFrontCamera" accept="image/*" capture="environment" style="display: none;">
+      <input type="file" id="fileInputBackCamera" accept="image/*" capture="environment" style="display: none;">
+
+      <!-- Mobile Gallery Fallback Inputs -->
+      <input type="file" id="fileInputFrontGallery" accept="image/*" style="display: none;">
+      <input type="file" id="fileInputBackGallery" accept="image/*" style="display: none;">
 
       <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; margin-bottom: 1.25rem;">
         <div class="id-upload-dropzone" id="idDropzoneFront" style="padding: 1.25rem; cursor: pointer; display: block;">
-          <i class="fa-solid fa-camera" style="font-size: 2rem; color: var(--primary); margin-bottom: 0.4rem;"></i>
-          <div style="font-weight: 800; font-size: 0.9rem;">【表面】を撮影・送信</div>
-          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;" id="idDropzoneFrontSub">カメラを起動して顔写真面を撮影</div>
+          <i class="fa-solid fa-camera" style="font-size: 2.2rem; color: var(--primary); margin-bottom: 0.4rem;"></i>
+          <div style="font-weight: 800; font-size: 0.95rem;">【表面】カメラで撮影</div>
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;" id="idDropzoneFrontSub">タップして外側カメラを起動</div>
         </div>
 
         <div class="id-upload-dropzone" id="idDropzoneBack" style="padding: 1.25rem; cursor: pointer; display: block;">
-          <i class="fa-solid fa-id-badge" style="font-size: 2rem; color: var(--primary); margin-bottom: 0.4rem;"></i>
-          <div style="font-weight: 800; font-size: 0.9rem;">【裏面】を撮影・送信</div>
-          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;" id="idDropzoneBackSub">カメラを起動して裏面・番号面を撮影</div>
+          <i class="fa-solid fa-id-badge" style="font-size: 2.2rem; color: var(--primary); margin-bottom: 0.4rem;"></i>
+          <div style="font-weight: 800; font-size: 0.95rem;">【裏面】カメラで撮影</div>
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;" id="idDropzoneBackSub">タップして外側カメラを起動</div>
         </div>
       </div>
 
@@ -550,6 +555,6 @@
 
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="app.js?v=20260825_v2"></script>
+  <script src="app.js?v=20260825_v3"></script>
 </body>
 </html>

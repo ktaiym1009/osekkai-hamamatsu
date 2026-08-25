@@ -745,8 +745,10 @@ function setupEventListeners() {
   // ID Verification (eKYC My Number Card & Driver's License)
   const idDropzoneFront = document.getElementById("idDropzoneFront");
   const idDropzoneBack = document.getElementById("idDropzoneBack");
-  const fileInputFront = document.getElementById("fileInputFront");
-  const fileInputBack = document.getElementById("fileInputBack");
+  const fileInputFrontCamera = document.getElementById("fileInputFrontCamera");
+  const fileInputBackCamera = document.getElementById("fileInputBackCamera");
+  const fileInputFrontGallery = document.getElementById("fileInputFrontGallery");
+  const fileInputBackGallery = document.getElementById("fileInputBackGallery");
 
   const cameraModal = document.getElementById("cameraModal");
   const cameraVideo = document.getElementById("cameraVideo");
@@ -771,9 +773,9 @@ function setupEventListeners() {
       idDropzoneFront.style.background = "";
       idDropzoneFront.style.borderColor = "";
       idDropzoneFront.innerHTML = `
-        <i class="fa-solid fa-camera" style="font-size: 2rem; color: var(--primary); margin-bottom: 0.4rem;"></i>
-        <div style="font-weight: 800; font-size: 0.9rem;">【表面】を撮影・送信</div>
-        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;" id="idDropzoneFrontSub">外側カメラで顔写真面を撮影</div>
+        <i class="fa-solid fa-camera" style="font-size: 2.2rem; color: var(--primary); margin-bottom: 0.4rem;"></i>
+        <div style="font-weight: 800; font-size: 0.95rem;">【表面】カメラで撮影</div>
+        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;" id="idDropzoneFrontSub">タップして外側カメラを起動</div>
       `;
     }
 
@@ -781,14 +783,16 @@ function setupEventListeners() {
       idDropzoneBack.style.background = "";
       idDropzoneBack.style.borderColor = "";
       idDropzoneBack.innerHTML = `
-        <i class="fa-solid fa-id-badge" style="font-size: 2rem; color: var(--primary); margin-bottom: 0.4rem;"></i>
-        <div style="font-weight: 800; font-size: 0.9rem;">【裏面】を撮影・送信</div>
-        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;" id="idDropzoneBackSub">外側カメラで裏面変更記載面を撮影</div>
+        <i class="fa-solid fa-id-badge" style="font-size: 2.2rem; color: var(--primary); margin-bottom: 0.4rem;"></i>
+        <div style="font-weight: 800; font-size: 0.95rem;">【裏面】カメラで撮影</div>
+        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;" id="idDropzoneBackSub">タップして外側カメラを起動</div>
       `;
     }
 
-    if (fileInputFront) fileInputFront.value = "";
-    if (fileInputBack) fileInputBack.value = "";
+    if (fileInputFrontCamera) fileInputFrontCamera.value = "";
+    if (fileInputBackCamera) fileInputBackCamera.value = "";
+    if (fileInputFrontGallery) fileInputFrontGallery.value = "";
+    if (fileInputBackGallery) fileInputBackGallery.value = "";
     frontImageData = null;
     backImageData = null;
     stopCameraStream();
@@ -805,29 +809,11 @@ function setupEventListeners() {
         : `📷 【裏面（${docName}）】を外側カメラで撮影`;
     }
 
-    const cameraGuideText = document.getElementById("cameraGuideText");
-    if (cameraGuideText) {
-      cameraGuideText.textContent = "枠内にカードを合わせて「写真を撮影する」を押してください";
-    }
-
-    openModal(cameraModal);
-
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "environment" } }
-      }).then(stream => {
-        mediaStream = stream;
-        cameraVideo.srcObject = stream;
-      }).catch(err => {
-        console.warn("Live camera stream request:", err);
-        if (cameraGuideText) {
-          cameraGuideText.textContent = "カメラの使用がブロックされたか、対応していないブラウザです。下の「アルバムから選択」をお使いください。";
-        }
-      });
+    // Direct Camera Launch via Mobile OS Camera API (capture="environment")
+    if (target === "front") {
+      if (fileInputFrontCamera) fileInputFrontCamera.click();
     } else {
-      if (cameraGuideText) {
-        cameraGuideText.textContent = "下の「アルバムから選択」ボタンを押して写真を設定してください。";
-      }
+      if (fileInputBackCamera) fileInputBackCamera.click();
     }
   }
 
@@ -843,8 +829,8 @@ function setupEventListeners() {
     btnFallbackGallery.addEventListener("click", () => {
       stopCameraStream();
       closeModal(cameraModal);
-      if (activeCaptureTarget === "front" && fileInputFront) fileInputFront.click();
-      if (activeCaptureTarget === "back" && fileInputBack) fileInputBack.click();
+      if (activeCaptureTarget === "front" && fileInputFrontGallery) fileInputFrontGallery.click();
+      if (activeCaptureTarget === "back" && fileInputBackGallery) fileInputBackGallery.click();
     });
   }
 
@@ -861,6 +847,48 @@ function setupEventListeners() {
       startRearCamera("back");
     });
   }
+
+  function handleFileSelected(file, target) {
+    const selectedDocType = document.querySelector('input[name="docType"]:checked')?.value || "mynumber";
+    const docName = selectedDocType === "license" ? "運転免許証" : "マイナンバーカード";
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = function(evt) {
+        if (target === "front") {
+          frontImageData = evt.target.result;
+          if (idDropzoneFront) {
+            idDropzoneFront.style.background = "#d1fae5";
+            idDropzoneFront.style.borderColor = "#059669";
+            idDropzoneFront.innerHTML = `
+              <img src="${evt.target.result}" style="width: 100%; height: 75px; object-fit: cover; border-radius: var(--radius-sm); margin-bottom: 0.3rem; border: 1.5px solid #059669;">
+              <div style="font-weight:800; color:#064e3b; font-size:0.85rem;"><i class="fa-solid fa-circle-check" style="color:#059669;"></i> 表面 撮影完了</div>
+            `;
+          }
+          showToast(`📸 ${docName}【表面】の写真を撮影・設定しました！`);
+        } else {
+          backImageData = evt.target.result;
+          if (idDropzoneBack) {
+            idDropzoneBack.style.background = "#d1fae5";
+            idDropzoneBack.style.borderColor = "#059669";
+            idDropzoneBack.innerHTML = `
+              <img src="${evt.target.result}" style="width: 100%; height: 75px; object-fit: cover; border-radius: var(--radius-sm); margin-bottom: 0.3rem; border: 1.5px solid #059669;">
+              <div style="font-weight:800; color:#064e3b; font-size:0.85rem;"><i class="fa-solid fa-circle-check" style="color:#059669;"></i> 裏面 撮影完了</div>
+            `;
+          }
+          showToast(`📸 ${docName}【裏面】の写真を撮影・設定しました！`);
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  }
+
+  [fileInputFrontCamera, fileInputFrontGallery].forEach(input => {
+    if (input) input.addEventListener("change", (e) => handleFileSelected(e.target.files[0], "front"));
+  });
+
+  [fileInputBackCamera, fileInputBackGallery].forEach(input => {
+    if (input) input.addEventListener("change", (e) => handleFileSelected(e.target.files[0], "back"));
+  });
 
   if (btnTakeSnap) {
     btnTakeSnap.addEventListener("click", () => {
