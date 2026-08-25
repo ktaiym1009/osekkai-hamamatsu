@@ -236,16 +236,39 @@ function saveStoredTasks(tasks) {
   } catch (e) {}
 }
 
+function getStoredStats() {
+  try {
+    const raw = localStorage.getItem("osekkai_stats_store");
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return null;
+}
+
+function saveStoredStats(stats) {
+  try {
+    localStorage.setItem("osekkai_stats_store", JSON.stringify(stats));
+  } catch (e) {}
+}
+
 async function fetchStats() {
   try {
     const res = await apiFetch("/api/stats");
     if (res) {
-      npoStatsState = await res.json();
-      updateStatsUI();
-      return;
+      const data = await res.json();
+      if (data && data.totalMealsServed !== undefined) {
+        npoStatsState = data;
+        saveStoredStats(npoStatsState);
+        updateStatsUI();
+        return;
+      }
     }
   } catch (err) {
     console.warn("⚠️ API fetchStats fallback:", err);
+  }
+
+  const localStats = getStoredStats();
+  if (localStats) {
+    npoStatsState = localStats;
   }
   updateStatsUI();
 }
@@ -329,6 +352,7 @@ async function completeTaskApi(taskId) {
       const data = await res.json();
       if (data.npoStats) {
         npoStatsState = data.npoStats;
+        saveStoredStats(npoStatsState);
         updateStatsUI();
       }
     }
@@ -340,6 +364,7 @@ async function completeTaskApi(taskId) {
   saveStoredTasks(tasksState);
   npoStatsState.totalMealsServed = (npoStatsState.totalMealsServed || 0) + 1;
   npoStatsState.totalDonationYen = (npoStatsState.totalDonationYen || 0) + 500;
+  saveStoredStats(npoStatsState);
   updateStatsUI();
   renderTasks();
   updateWardCounts();
