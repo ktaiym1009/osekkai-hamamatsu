@@ -805,21 +805,29 @@ function setupEventListeners() {
         : `📷 【裏面（${docName}）】を外側カメラで撮影`;
     }
 
+    const cameraGuideText = document.getElementById("cameraGuideText");
+    if (cameraGuideText) {
+      cameraGuideText.textContent = "枠内にカードを合わせて「写真を撮影する」を押してください";
+    }
+
+    openModal(cameraModal);
+
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
       navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: "environment" } }
       }).then(stream => {
         mediaStream = stream;
         cameraVideo.srcObject = stream;
-        openModal(cameraModal);
       }).catch(err => {
-        console.warn("Live camera fallback to HTML5 file input:", err);
-        if (target === "front" && fileInputFront) fileInputFront.click();
-        if (target === "back" && fileInputBack) fileInputBack.click();
+        console.warn("Live camera stream request:", err);
+        if (cameraGuideText) {
+          cameraGuideText.textContent = "カメラの使用がブロックされたか、対応していないブラウザです。下の「アルバムから選択」をお使いください。";
+        }
       });
     } else {
-      if (target === "front" && fileInputFront) fileInputFront.click();
-      if (target === "back" && fileInputBack) fileInputBack.click();
+      if (cameraGuideText) {
+        cameraGuideText.textContent = "下の「アルバムから選択」ボタンを押して写真を設定してください。";
+      }
     }
   }
 
@@ -828,6 +836,16 @@ function setupEventListeners() {
       mediaStream.getTracks().forEach(track => track.stop());
       mediaStream = null;
     }
+  }
+
+  const btnFallbackGallery = document.getElementById("btnFallbackGallery");
+  if (btnFallbackGallery) {
+    btnFallbackGallery.addEventListener("click", () => {
+      stopCameraStream();
+      closeModal(cameraModal);
+      if (activeCaptureTarget === "front" && fileInputFront) fileInputFront.click();
+      if (activeCaptureTarget === "back" && fileInputBack) fileInputBack.click();
+    });
   }
 
   if (idDropzoneFront) {
