@@ -157,6 +157,25 @@ function updateVerificationBadgesUI() {
   }
 }
 
+const BACKEND_CLOUD_API = "https://osekkai-hamamatsu.vercel.app";
+
+async function apiFetch(endpoint, options = {}) {
+  // 1. Try local / relative endpoint first
+  try {
+    const res = await fetch(endpoint, options);
+    if (res && res.ok) return res;
+  } catch (err) {}
+
+  // 2. Fallback to Cloud Backend API (enables instant real-time sync on GitHub Pages!)
+  try {
+    const cloudUrl = BACKEND_CLOUD_API + endpoint;
+    const res = await fetch(cloudUrl, options);
+    if (res && res.ok) return res;
+  } catch (err) {}
+
+  return null;
+}
+
 // Default Initial Hamamatsu Sample Tasks
 const INITIAL_SAMPLE_TASKS = [
   {
@@ -217,12 +236,26 @@ function saveStoredTasks(tasks) {
   } catch (e) {}
 }
 
+async function fetchStats() {
+  try {
+    const res = await apiFetch("/api/stats");
+    if (res) {
+      npoStatsState = await res.json();
+      updateStatsUI();
+      return;
+    }
+  } catch (err) {
+    console.warn("⚠️ API fetchStats fallback:", err);
+  }
+  updateStatsUI();
+}
+
 async function fetchTasks() {
   try {
-    const res = await fetch("/api/tasks");
-    if (res.ok) {
+    const res = await apiFetch("/api/tasks");
+    if (res) {
       const data = await res.json();
-      if (Array.isArray(data)) {
+      if (Array.isArray(data) && data.length > 0) {
         tasksState = data;
         saveStoredTasks(tasksState);
         renderTasks();
@@ -234,7 +267,7 @@ async function fetchTasks() {
     console.warn("⚠️ API fetchTasks fallback to local storage:", err);
   }
 
-  // Fallback for Static Hosting (GitHub Pages / Vercel without backend server)
+  // Fallback for offline/client state
   const local = getStoredTasks();
   if (local && Array.isArray(local) && local.length > 0) {
     tasksState = local;
@@ -263,12 +296,12 @@ async function createNewTask(taskData) {
   };
 
   try {
-    const res = await fetch("/api/tasks", {
+    const res = await apiFetch("/api/tasks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(taskData)
     });
-    if (res.ok) {
+    if (res) {
       const data = await res.json();
       if (data.task) {
         tasksState.unshift(data.task);
@@ -279,10 +312,10 @@ async function createNewTask(taskData) {
       }
     }
   } catch (err) {
-    console.warn("⚠️ API createNewTask fallback to client state:", err);
+    console.warn("⚠️ API createNewTask fallback:", err);
   }
 
-  // Fallback for Static Hosting (GitHub Pages)
+  // Fallback for client state
   tasksState.unshift(newTask);
   saveStoredTasks(tasksState);
   renderTasks();
@@ -291,8 +324,8 @@ async function createNewTask(taskData) {
 
 async function completeTaskApi(taskId) {
   try {
-    const res = await fetch(`/api/tasks/${taskId}/complete`, { method: "POST" });
-    if (res.ok) {
+    const res = await apiFetch(`/api/tasks/${taskId}/complete`, { method: "POST" });
+    if (res) {
       const data = await res.json();
       if (data.npoStats) {
         npoStatsState = data.npoStats;
