@@ -745,22 +745,11 @@ function setupEventListeners() {
   // ID Verification (eKYC My Number Card & Driver's License)
   const idDropzoneFront = document.getElementById("idDropzoneFront");
   const idDropzoneBack = document.getElementById("idDropzoneBack");
-  const fileInputFrontCamera = document.getElementById("fileInputFrontCamera");
-  const fileInputBackCamera = document.getElementById("fileInputBackCamera");
-  const fileInputFrontGallery = document.getElementById("fileInputFrontGallery");
-  const fileInputBackGallery = document.getElementById("fileInputBackGallery");
-
-  const cameraModal = document.getElementById("cameraModal");
-  const cameraVideo = document.getElementById("cameraVideo");
-  const cameraCanvas = document.getElementById("cameraCanvas");
-  const btnTakeSnap = document.getElementById("btnTakeSnap");
-  const btnCloseCameraModal = document.getElementById("btnCloseCameraModal");
-  const cameraModalTitle = document.getElementById("cameraModalTitle");
+  const fileInputFront = document.getElementById("fileInputFront");
+  const fileInputBack = document.getElementById("fileInputBack");
 
   let frontImageData = null;
   let backImageData = null;
-  let activeCaptureTarget = "front";
-  let mediaStream = null;
 
   window.resetVerifyModalUI = function() {
     const simResult = document.getElementById("verificationSimResult");
@@ -774,8 +763,8 @@ function setupEventListeners() {
       idDropzoneFront.style.borderColor = "";
       idDropzoneFront.innerHTML = `
         <i class="fa-solid fa-camera" style="font-size: 2.2rem; color: var(--primary); margin-bottom: 0.4rem;"></i>
-        <div style="font-weight: 800; font-size: 0.95rem;">【表面】カメラで撮影</div>
-        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;" id="idDropzoneFrontSub">タップして外側カメラを起動</div>
+        <div style="font-weight: 800; font-size: 0.95rem; color: var(--text-main);">【表面】を撮影・選択</div>
+        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;" id="idDropzoneFrontSub">タップしてカメラ撮影またはファイル選択</div>
       `;
     }
 
@@ -784,57 +773,28 @@ function setupEventListeners() {
       idDropzoneBack.style.borderColor = "";
       idDropzoneBack.innerHTML = `
         <i class="fa-solid fa-id-badge" style="font-size: 2.2rem; color: var(--primary); margin-bottom: 0.4rem;"></i>
-        <div style="font-weight: 800; font-size: 0.95rem;">【裏面】カメラで撮影</div>
-        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;" id="idDropzoneBackSub">タップして外側カメラを起動</div>
+        <div style="font-weight: 800; font-size: 0.95rem; color: var(--text-main);">【裏面】を撮影・選択</div>
+        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;" id="idDropzoneBackSub">タップしてカメラ撮影またはファイル選択</div>
       `;
     }
 
-    if (fileInputFrontCamera) fileInputFrontCamera.value = "";
-    if (fileInputBackCamera) fileInputBackCamera.value = "";
-    if (fileInputFrontGallery) fileInputFrontGallery.value = "";
-    if (fileInputBackGallery) fileInputBackGallery.value = "";
+    if (fileInputFront) fileInputFront.value = "";
+    if (fileInputBack) fileInputBack.value = "";
     frontImageData = null;
     backImageData = null;
-    stopCameraStream();
   };
 
-  function startRearCamera(target) {
-    activeCaptureTarget = target;
-    const selectedDocType = document.querySelector('input[name="docType"]:checked')?.value || "mynumber";
-    const docName = selectedDocType === "license" ? "運転免許証" : "マイナンバーカード";
-
-    if (cameraModalTitle) {
-      cameraModalTitle.textContent = target === "front" 
-        ? `📷 【表面（${docName}）】を外側カメラで撮影` 
-        : `📷 【裏面（${docName}）】を外側カメラで撮影`;
-    }
-
-    // Direct Camera Launch via Mobile OS Camera API (capture="environment")
-    if (target === "front") {
-      if (fileInputFrontCamera) fileInputFrontCamera.click();
-    } else {
-      if (fileInputBackCamera) fileInputBackCamera.click();
-    }
-  }
-
-  function stopCameraStream() {
-    if (mediaStream) {
-      mediaStream.getTracks().forEach(track => track.stop());
-      mediaStream = null;
-    }
-  }
-
-  const btnFallbackGallery = document.getElementById("btnFallbackGallery");
-  if (btnFallbackGallery) {
-    btnFallbackGallery.addEventListener("click", () => {
-      stopCameraStream();
-      closeModal(cameraModal);
-      if (activeCaptureTarget === "front" && fileInputFrontGallery) fileInputFrontGallery.click();
-      if (activeCaptureTarget === "back" && fileInputBackGallery) fileInputBackGallery.click();
+  if (idDropzoneFront) {
+    idDropzoneFront.addEventListener("click", () => {
+      if (fileInputFront) fileInputFront.click();
     });
   }
 
-
+  if (idDropzoneBack) {
+    idDropzoneBack.addEventListener("click", () => {
+      if (fileInputBack) fileInputBack.click();
+    });
+  }
 
   function handleFileSelected(file, target) {
     const selectedDocType = document.querySelector('input[name="docType"]:checked')?.value || "mynumber";
@@ -849,10 +809,10 @@ function setupEventListeners() {
             idDropzoneFront.style.borderColor = "#059669";
             idDropzoneFront.innerHTML = `
               <img src="${evt.target.result}" style="width: 100%; height: 75px; object-fit: cover; border-radius: var(--radius-sm); margin-bottom: 0.3rem; border: 1.5px solid #059669;">
-              <div style="font-weight:800; color:#064e3b; font-size:0.85rem;"><i class="fa-solid fa-circle-check" style="color:#059669;"></i> 表面 撮影完了</div>
+              <div style="font-weight:800; color:#064e3b; font-size:0.85rem;"><i class="fa-solid fa-circle-check" style="color:#059669;"></i> 表面 登録完了</div>
             `;
           }
-          showToast(`📸 ${docName}【表面】の写真を撮影・設定しました！`);
+          showToast(`📸 ${docName}【表面】の画像が登録されました！`);
         } else {
           backImageData = evt.target.result;
           if (idDropzoneBack) {
@@ -860,23 +820,23 @@ function setupEventListeners() {
             idDropzoneBack.style.borderColor = "#059669";
             idDropzoneBack.innerHTML = `
               <img src="${evt.target.result}" style="width: 100%; height: 75px; object-fit: cover; border-radius: var(--radius-sm); margin-bottom: 0.3rem; border: 1.5px solid #059669;">
-              <div style="font-weight:800; color:#064e3b; font-size:0.85rem;"><i class="fa-solid fa-circle-check" style="color:#059669;"></i> 裏面 撮影完了</div>
+              <div style="font-weight:800; color:#064e3b; font-size:0.85rem;"><i class="fa-solid fa-circle-check" style="color:#059669;"></i> 裏面 登録完了</div>
             `;
           }
-          showToast(`📸 ${docName}【裏面】の写真を撮影・設定しました！`);
+          showToast(`📸 ${docName}【裏面】の画像が登録されました！`);
         }
       };
       reader.readAsDataURL(file);
     }
   }
 
-  [fileInputFrontCamera, fileInputFrontGallery].forEach(input => {
-    if (input) input.addEventListener("change", (e) => handleFileSelected(e.target.files[0], "front"));
-  });
+  if (fileInputFront) {
+    fileInputFront.addEventListener("change", (e) => handleFileSelected(e.target.files[0], "front"));
+  }
 
-  [fileInputBackCamera, fileInputBackGallery].forEach(input => {
-    if (input) input.addEventListener("change", (e) => handleFileSelected(e.target.files[0], "back"));
-  });
+  if (fileInputBack) {
+    fileInputBack.addEventListener("change", (e) => handleFileSelected(e.target.files[0], "back"));
+  }
 
   if (btnTakeSnap) {
     btnTakeSnap.addEventListener("click", () => {

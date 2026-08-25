@@ -33,9 +33,9 @@
   
   <!-- LINE LIFF SDK & Config -->
   <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
-  <script src="line_config.js?v=20260825_v5"></script>
+  <script src="line_config.js?v=20260825_v6"></script>
 
-  <link rel="stylesheet" href="index.css?v=20260825_v5">
+  <link rel="stylesheet" href="index.css?v=20260825_v6">
 </head>
 <body>
 
@@ -366,26 +366,23 @@
         </div>
       </div>
 
-      <!-- Direct Camera Inputs wrapped inside native <label> tags with opacity 0 for PC and Mobile support -->
+      <!-- Standard Cross-Platform File & Camera Inputs -->
+      <input type="file" id="fileInputFront" accept="image/*" style="display: none;">
+      <input type="file" id="fileInputBack" accept="image/*" style="display: none;">
+
       <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; margin-bottom: 1.25rem;">
-        <label for="fileInputFrontCamera" class="id-upload-dropzone" id="idDropzoneFront" style="padding: 1.25rem; cursor: pointer; display: block; position: relative;">
-          <input type="file" id="fileInputFrontCamera" accept="image/*" capture="environment" style="opacity: 0; position: absolute; width: 1px; height: 1px; pointer-events: none;">
+        <button type="button" class="id-upload-dropzone" id="idDropzoneFront" style="padding: 1.25rem; cursor: pointer; display: block; width: 100%; border: 2px dashed var(--primary); background: var(--primary-light); border-radius: var(--radius-md); text-align: center; transition: all 0.2s ease;">
           <i class="fa-solid fa-camera" style="font-size: 2.2rem; color: var(--primary); margin-bottom: 0.4rem;"></i>
-          <div style="font-weight: 800; font-size: 0.95rem;">【表面】カメラで撮影</div>
-          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;" id="idDropzoneFrontSub">タップしてカメラを起動・選択</div>
-        </label>
+          <div style="font-weight: 800; font-size: 0.95rem; color: var(--text-main);">【表面】を撮影・選択</div>
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;" id="idDropzoneFrontSub">タップしてカメラ撮影またはファイル選択</div>
+        </button>
 
-        <label for="fileInputBackCamera" class="id-upload-dropzone" id="idDropzoneBack" style="padding: 1.25rem; cursor: pointer; display: block; position: relative;">
-          <input type="file" id="fileInputBackCamera" accept="image/*" capture="environment" style="opacity: 0; position: absolute; width: 1px; height: 1px; pointer-events: none;">
+        <button type="button" class="id-upload-dropzone" id="idDropzoneBack" style="padding: 1.25rem; cursor: pointer; display: block; width: 100%; border: 2px dashed var(--primary); background: var(--primary-light); border-radius: var(--radius-md); text-align: center; transition: all 0.2s ease;">
           <i class="fa-solid fa-id-badge" style="font-size: 2.2rem; color: var(--primary); margin-bottom: 0.4rem;"></i>
-          <div style="font-weight: 800; font-size: 0.95rem;">【裏面】カメラで撮影</div>
-          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;" id="idDropzoneBackSub">タップしてカメラを起動・選択</div>
-        </label>
+          <div style="font-weight: 800; font-size: 0.95rem; color: var(--text-main);">【裏面】を撮影・選択</div>
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem;" id="idDropzoneBackSub">タップしてカメラ撮影またはファイル選択</div>
+        </button>
       </div>
-
-      <!-- Mobile Gallery Fallback Inputs -->
-      <input type="file" id="fileInputFrontGallery" accept="image/*" style="display: none;">
-      <input type="file" id="fileInputBackGallery" accept="image/*" style="display: none;">
 
       <div id="verificationSimResult" style="display: none; background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%); padding: 1.25rem; border-radius: var(--radius-md); text-align: center; border: 1.5px solid var(--primary);">
         <div style="font-weight: 900; font-size: 1.15rem; color: #064e3b; margin-bottom: 0.4rem;" id="simResultTitle">
@@ -562,6 +559,6 @@
 
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="app.js?v=20260825_v5"></script>
+  <script src="app.js?v=20260825_v6"></script>
 </body>
 </html>
