@@ -17,7 +17,7 @@ function Load-DB {
     }
     return [PSCustomObject]@{
         tasks = @()
-        npoStats = [PSCustomObject]@{ totalMealsServed = 0; totalDonationYen = 0; supportedCafeterias = 14; registeredSupporters = 0 }
+        npoStats = [PSCustomObject]@{ totalMealsServed = 0; totalDonationYen = 0; supportedCafeterias = 0; registeredSupporters = 0 }
         chatStore = [PSCustomObject]@{}
         autoReplies = @("Arigatou gozaimasu!")
         userVerifications = [PSCustomObject]@{ defaultUser = [PSCustomObject]@{ requester = $true; helper = $true } }
@@ -39,12 +39,12 @@ $listener = New-Object System.Net.HttpListener
 
 $wildcardStarted = $false
 try {
-    $listener.Prefixes.Add("http://+:8080/")
+    $listener.Prefixes.Add("http://+:3000/")
     $listener.Start()
     $wildcardStarted = $true
 } catch {
     $listener = New-Object System.Net.HttpListener
-    $listener.Prefixes.Add("http://localhost:8080/")
+    $listener.Prefixes.Add("http://localhost:3000/")
     $listener.Start()
 }
 
@@ -72,6 +72,9 @@ while ($listener.IsListening) {
         $response.Headers.Add("Access-Control-Allow-Origin", "*")
         $response.Headers.Add("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         $response.Headers.Add("Access-Control-Allow-Headers", "Content-Type")
+        $response.Headers.Add("Cache-Control", "no-cache, no-store, must-revalidate")
+        $response.Headers.Add("Pragma", "no-cache")
+        $response.Headers.Add("Expires", "0")
 
         if ($request.HttpMethod -eq "OPTIONS") {
             $response.StatusCode = 204
@@ -101,7 +104,7 @@ while ($listener.IsListening) {
         if ($urlPath -eq "/api/reset" -and $httpMethod -eq "POST") {
             $db = [PSCustomObject]@{
                 tasks = @()
-                npoStats = [PSCustomObject]@{ totalMealsServed = 0; totalDonationYen = 0; supportedCafeterias = 14; registeredSupporters = 0 }
+                npoStats = [PSCustomObject]@{ totalMealsServed = 0; totalDonationYen = 0; supportedCafeterias = 0; registeredSupporters = 0 }
                 chatStore = [PSCustomObject]@{}
                 autoReplies = @("Arigatou gozaimasu!")
                 userVerifications = [PSCustomObject]@{ defaultUser = [PSCustomObject]@{ requester = $true; helper = $true } }

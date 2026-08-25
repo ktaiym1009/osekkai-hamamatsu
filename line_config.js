@@ -1,10 +1,10 @@
 /* ==========================================================================
-   お節会 浜松 (Osekkai Hamamatsu) - LINE LIFF & LINE Login Config
+   おせっ会 浜松 (Osekkai Hamamatsu) - LINE LIFF & LINE Login Config
    ========================================================================== */
 
 const LINE_CONFIG = {
   // LINE Developers Console で発行された LIFF ID
-  liffId: "2011220027-dMQ4Yp5N", 
+  liffId: "2011208076-70q7lR0Q", 
   
   // LINE連携の有効化フラグ
   isLineEnabled: true,

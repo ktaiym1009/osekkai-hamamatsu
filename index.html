@@ -3,14 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>お節会 浜松（おせっかい浜松）| 子ども食堂応援・地域助け合いアプリ</title>
+  <title>おせっ会 浜松 | 子ども食堂応援・地域助け合いアプリ</title>
   <meta name="description" content="浜松市での日常の困りごと（買い物・荷物・家事・付き添い）を相互助け合いで解決。お礼の500円は全額子ども食堂の運営資金へ。双方向の身元確認とプライバシー保護で安心。">
   
   <!-- PWA Mobile App Manifest & Theme -->
   <link rel="manifest" href="manifest.json">
   <meta name="theme-color" content="#059669">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-title" content="お節会浜松">
+  <meta name="apple-mobile-web-app-title" content="おせっ会浜松">
+
+  <!-- Cache Invalidation Meta Tags for Mobile Sync -->
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
 
   <!-- Fonts & Icons -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -20,24 +25,26 @@
   
   <!-- LINE LIFF SDK & Config -->
   <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
-  <script src="line_config.js"></script>
+  <script src="line_config.js?v=20260825_v1"></script>
 
-  <link rel="stylesheet" href="index.css">
+  <link rel="stylesheet" href="index.css?v=20260825_v1">
 </head>
 <body>
 
   <!-- App Header -->
   <header class="app-header">
     <div class="nav-container">
-      <a href="#" class="logo-group" id="logoLink">
+      <div class="logo-group" id="logoGroup">
         <div class="logo-icon">
           <i class="fa-solid fa-hand-holding-heart"></i>
         </div>
         <div>
-          <div class="logo-title">お節会 浜松 <span style="font-size: 0.75em; font-weight: 500; opacity: 0.85;">(おせっかい)</span></div>
-          <div class="logo-subtitle">子ども食堂応援ワンコインプラットフォーム</div>
+          <div class="logo-title">おせっ会 浜松</div>
+          <a href="#" class="logo-subtitle" id="linkNpoPlatform" title="子ども食堂の活動・プラットフォーム詳細を見る">
+            子ども食堂応援ワンコインプラットフォーム <i class="fa-solid fa-arrow-up-right-from-square" style="font-size: 0.7em;"></i>
+          </a>
         </div>
-      </a>
+      </div>
 
       <div class="header-controls">
         <button class="btn-toggle-mode" id="btnLineLogin" style="background: #06c755; color: white; border: none; font-weight: 800;">
@@ -45,10 +52,6 @@
           <span id="lineStatusLabel">LINE連携</span>
         </button>
 
-        <button class="btn-toggle-mode" id="btnResetData" style="background: #ef4444; color: white; border: none; font-weight: 800;" title="本番スタート用にデータ（給食数・投稿）を0から初期化します">
-          <i class="fa-solid fa-rotate-left"></i>
-          <span>本番用にデータ初期化</span>
-        </button>
 
         <button class="btn-toggle-mode" id="toggleSeniorMode" title="大きな文字とシンプルな画面に切替">
           <i class="fa-solid fa-glasses"></i>
@@ -429,7 +432,7 @@
       <div class="modal-header">
         <h3 class="modal-title" style="color: var(--secondary);">
           <i class="fa-solid fa-utensils"></i>
-          子ども食堂 応援活動レポート（浜松市連携）
+          子ども食堂 応援活動レポート
         </h3>
         <button class="btn-close-modal">&times;</button>
       </div>
@@ -452,7 +455,7 @@
           <div class="npo-metric-label">市民の助け合い寄付額</div>
         </div>
         <div class="npo-metric-card">
-          <div class="npo-metric-value">14箇所</div>
+          <div class="npo-metric-value" id="npoMetricCafeterias">0箇所</div>
           <div class="npo-metric-label">支援中の市域子ども食堂</div>
         </div>
         <div class="npo-metric-card">
@@ -470,19 +473,12 @@
           浜松市内で生まれた日常の「電球交換」「お買い物」「付き添い」の助け合い。感謝のお礼として手渡されるワンコイン500円は、全額が浜松市内の子ども食堂ネットワークを通じて地元産の新鮮野菜や米・肉の購入費に活用されています。
         </p>
 
-        <div class="npo-testimonial-card">
-          <div class="testimonial-avatar">👵</div>
-          <div class="testimonial-content">
-            <div class="testimonial-name">浜松市中区 鈴木様（依頼者・82歳）</div>
-            <div class="testimonial-text">「高所の電球を付け替えていただき本当に助かりました。そのお礼の500円が地元の子供たちのご飯になると思うと、心まで温かくなります。」</div>
+        <div style="background: white; border: 1px dashed var(--border); padding: 0.9rem; border-radius: var(--radius-md); text-align: center; margin-top: 0.75rem;">
+          <div style="font-weight: 700; font-size: 0.85rem; color: var(--primary);">
+            <i class="fa-solid fa-comments"></i> 助け合いの声・体験談メッセージ
           </div>
-        </div>
-
-        <div class="npo-testimonial-card" style="background: #f0fdf4; border-color: #bbf7d0;">
-          <div class="testimonial-avatar">🧒</div>
-          <div class="testimonial-content">
-            <div class="testimonial-name">子ども食堂参加の小学生・保護者の声</div>
-            <div class="testimonial-text">「みんなで食べるカレーライスと新鮮なお野菜がとっても美味しい！いつも応援してくれてありがとう！」</div>
+          <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">
+            実際に助け合いが行われた際のお礼の声や子ども食堂からの感謝メッセージを、今後順次掲載いたします♪
           </div>
         </div>
       </div>
@@ -550,6 +546,6 @@
 
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="app.js?v=20260823_v5"></script>
+  <script src="app.js?v=20260825_v1"></script>
 </body>
 </html>

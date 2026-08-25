@@ -110,6 +110,7 @@ body {
   gap: 0.75rem;
   text-decoration: none;
   color: var(--text-main);
+  cursor: default;
 }
 
 .logo-icon {
@@ -123,6 +124,7 @@ body {
   color: white;
   font-size: 1.5rem;
   box-shadow: var(--shadow-glow);
+  cursor: default;
 }
 
 .logo-title {
@@ -130,12 +132,25 @@ body {
   font-size: 1.25rem;
   letter-spacing: -0.02em;
   line-height: 1.2;
+  cursor: default;
+  user-select: none;
 }
 
 .logo-subtitle {
   font-size: 0.75rem;
   color: var(--primary);
   font-weight: 700;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  transition: all 0.2s ease;
+}
+
+.logo-subtitle:hover {
+  color: var(--primary-hover);
+  text-decoration: underline;
 }
 
 .header-controls {
@@ -772,13 +787,43 @@ body {
   to { transform: translateX(0); opacity: 1; }
 }
 
-/* Responsive Breakpoints */
-@media (max-width: 900px) {
+/* Responsive Breakpoints for Split Screen (画面左右2分割 50%表示対応) */
+@media (max-width: 1024px) {
+  .nav-container {
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+  .header-controls {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
   .main-wrapper {
     grid-template-columns: 1fr;
+    padding: 1rem 1rem 3rem;
   }
   .impact-card {
     grid-template-columns: 1fr;
+    gap: 1.25rem;
+    padding: 1.25rem 1.5rem;
+  }
+  .tasks-grid {
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .app-header {
+    padding: 0.6rem 0.8rem;
+  }
+  .logo-title {
+    font-size: 1.1rem;
+  }
+  .header-controls button {
+    font-size: 0.82rem;
+    padding: 0.45rem 0.75rem;
+  }
+  .modal-card {
+    padding: 1.25rem;
   }
 }
 

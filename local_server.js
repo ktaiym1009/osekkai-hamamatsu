@@ -1,5 +1,5 @@
 /* ==========================================================================
-   お節会 浜松 (Osekkai Hamamatsu) - Persistent Backend API & Web Server
+   おせっ会 浜松 (Osekkai Hamamatsu) - Persistent Backend API & Web Server
    Node.js Standard Library HTTP + File Storage (db.json) + LAN Access
    ========================================================================== */
 
@@ -23,7 +23,7 @@ function loadDB() {
   }
   return {
     tasks: [],
-    npoStats: { totalMealsServed: 1248, totalDonationYen: 624000, supportedCafeterias: 14, registeredSupporters: 340 },
+    npoStats: { totalMealsServed: 0, totalDonationYen: 0, supportedCafeterias: 0, registeredSupporters: 0 },
     chatStore: {},
     userVerifications: { defaultUser: { requester: true, helper: true } }
   };
@@ -73,6 +73,11 @@ const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  // Cache Control Headers (Prevent Mobile Browser Stale Cache)
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -153,7 +158,7 @@ const server = http.createServer((req, res) => {
 
     db.tasks = (db.tasks || []).filter(t => t.id !== taskId);
     if (!db.npoStats) {
-      db.npoStats = { totalMealsServed: 1248, totalDonationYen: 624000, supportedCafeterias: 14, registeredSupporters: 340 };
+      db.npoStats = { totalMealsServed: 0, totalDonationYen: 0, supportedCafeterias: 0, registeredSupporters: 0 };
     }
     db.npoStats.totalMealsServed += 1;
     db.npoStats.totalDonationYen += 500;
@@ -285,7 +290,7 @@ if (!process.env.VERCEL) {
   server.listen(PORT, '0.0.0.0', () => {
     const ips = getLocalIpAddresses();
     console.log("\n============================================================");
-    console.log("🌸 お節会 浜松 (Osekkai Hamamatsu) バックエンド＆Webサーバー起動！");
+    console.log("🌸 おせっ会 浜松 (Osekkai Hamamatsu) バックエンド＆Webサーバー起動！");
     console.log("============================================================");
     console.log(`💻 PCブラウザ用アクセス:   http://localhost:${PORT}/`);
     if (ips.length > 0) {

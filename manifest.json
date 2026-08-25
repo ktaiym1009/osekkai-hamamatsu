@@ -1,6 +1,6 @@
 {
-  "name": "お節会 浜松（おせっかい浜松）",
-  "short_name": "お節会浜松",
+  "name": "おせっ会 浜松",
+  "short_name": "おせっ会浜松",
   "description": "浜松市での日常の困りごとを相互助け合いで解決。お礼の500円は全額子ども食堂へ。",
   "start_url": "./index.html",
   "display": "standalone",
