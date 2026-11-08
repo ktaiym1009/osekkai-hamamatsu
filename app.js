@@ -57,6 +57,16 @@ const chatAvatar = document.getElementById("chatAvatar");
 const chatUserName = document.getElementById("chatUserName");
 const chatContextTitle = document.getElementById("chatContextTitle");
 
+// Camera Modal Elements & State (本人確認の撮影用)
+const cameraModal = document.getElementById("cameraModal");
+const cameraVideo = document.getElementById("cameraVideo");
+const cameraCanvas = document.getElementById("cameraCanvas");
+const btnTakeSnap = document.getElementById("btnTakeSnap");
+const btnCloseCameraModal = document.getElementById("btnCloseCameraModal");
+const btnFallbackGallery = document.getElementById("btnFallbackGallery");
+let activeCaptureTarget = "front"; // "front" | "back"
+let cameraStream = null;
+
 // LINE Integration State
 let lineUserProfile = {
   displayName: "",
@@ -68,18 +78,6 @@ let lineUserProfile = {
 // ==========================================================================
 // API Interaction Helpers (REST API Sync with server.js / db.json)
 // ==========================================================================
-
-async function fetchStats() {
-  try {
-    const res = await fetch("/api/stats");
-    if (res.ok) {
-      npoStatsState = await res.json();
-      updateStatsUI();
-    }
-  } catch (err) {
-    console.warn("⚠️ API fetchStats error:", err);
-  }
-}
 
 function updateStatsUI() {
   const meals = Number(npoStatsState.totalMealsServed || 0);
@@ -110,13 +108,50 @@ function updateStatsUI() {
   }
 }
 
-async function fetchUserVerification() {
+// --- ローカル保存キー（第2弾で接頭辞を v2 に変更） ---
+// 旧キー（接頭辞なし）にはプレビュー期間中のデモ由来データ（サンプル統計・
+// サンプル募集・デモチャット等）が残っている端末があるため、新しいキーに
+// 切り替えて旧データを読み込まないようにしました。旧キーの中身は削除せず
+// 残置しますが、今後は一切参照されません（新しい保存先は v2 キーのみ）。
+const STORAGE_KEYS = {
+  tasks: "osekkai_v2_tasks_store",
+  stats: "osekkai_v2_stats_store",
+  chats: "osekkai_v2_chat_store",
+  verification: "osekkai_v2_user_verification",
+  completedIds: "osekkai_v2_completed_task_ids"
+};
+
+// --- 本人確認状態のローカル保存（APIが使えない環境でも自分の認証状態を保持する） ---
+function getStoredVerification() {
   try {
-    const res = await fetch("/api/user/verify");
-    if (res.ok) {
+    const raw = localStorage.getItem(STORAGE_KEYS.verification);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return null;
+}
+
+function saveStoredVerification(v) {
+  try {
+    localStorage.setItem(STORAGE_KEYS.verification, JSON.stringify(v));
+  } catch (e) {}
+}
+
+async function fetchUserVerification() {
+  // 自分の認証状態は、まず自分のブラウザに保存されたものを正とする
+  const local = getStoredVerification();
+  if (local) {
+    userVerification = local;
+    updateVerificationBadgesUI();
+    return;
+  }
+
+  try {
+    const res = await apiFetch("/api/user/verify");
+    if (res) {
       const data = await res.json();
       if (data && data.defaultUser) {
         userVerification = data.defaultUser;
+        saveStoredVerification(userVerification);
         updateVerificationBadgesUI();
       }
     }
@@ -176,55 +211,13 @@ async function apiFetch(endpoint, options = {}) {
   return null;
 }
 
-// Default Initial Hamamatsu Sample Tasks
-const INITIAL_SAMPLE_TASKS = [
-  {
-    id: "task-sample-1",
-    category: "housework",
-    categoryName: "💡 住まいの手伝い",
-    title: "高所の電球交換の手伝い（脚立作業）",
-    description: "高所の電球が切れてしまい、足腰が痛いため交換していただける方を募集します。電球は購入済みです。",
-    fuzzyLocation: "浜松市中央区（旧中区） (500m圏内)",
-    exactLocation: "浜松市中央区（旧中区） 葵東2丁目 15-8",
-    requesterName: "鈴木 ハツ子様 (身元認証済み)",
-    requesterVerified: true,
-    timeAgo: "10分前",
-    status: "open",
-    donationAmount: 500
-  },
-  {
-    id: "task-sample-2",
-    category: "shopping",
-    categoryName: "🛒 お買い物・荷物持ち",
-    title: "スーパーでの重い米・油の買い物付き添い",
-    description: "お米（5kg）と調味料を買いたいのですが、重くて持てないため車への荷物搬入を手伝ってほしいです。",
-    fuzzyLocation: "浜松市中央区（旧東区） (500m圏内)",
-    exactLocation: "浜松市中央区（旧東区） 和田町 340",
-    requesterName: "山田 太郎様 (身元認証済み)",
-    requesterVerified: true,
-    timeAgo: "30分前",
-    status: "open",
-    donationAmount: 500
-  },
-  {
-    id: "task-sample-3",
-    category: "escort",
-    categoryName: "🚶 外出・病院の付き添い",
-    title: "浜松医療センターへの通院付き添い・徒歩アシスト",
-    description: "病院での受付や車椅子移動のアシストをお願いしたいです。ゆっくり歩ける方ならどなたでも助かります。",
-    fuzzyLocation: "浜松市浜名区（旧浜北区） (500m圏内)",
-    exactLocation: "浜松市浜名区（旧浜北区） 貴布祢 120",
-    requesterName: "高橋 さくら様 (身元認証済み)",
-    requesterVerified: true,
-    timeAgo: "1時間前",
-    status: "open",
-    donationAmount: 500
-  }
-];
+// 初期表示用の募集データは置きません（第2弾でデモデータを全て削除）。
+// 起動直後は0件が正しい状態で、「まだ投稿がありません」の空表示が出ます。
+const INITIAL_SAMPLE_TASKS = [];
 
 function getStoredTasks() {
   try {
-    const raw = localStorage.getItem("osekkai_tasks_store");
+    const raw = localStorage.getItem(STORAGE_KEYS.tasks);
     if (raw) return JSON.parse(raw);
   } catch (e) {}
   return null;
@@ -232,13 +225,13 @@ function getStoredTasks() {
 
 function saveStoredTasks(tasks) {
   try {
-    localStorage.setItem("osekkai_tasks_store", JSON.stringify(tasks));
+    localStorage.setItem(STORAGE_KEYS.tasks, JSON.stringify(tasks));
   } catch (e) {}
 }
 
 function getStoredStats() {
   try {
-    const raw = localStorage.getItem("osekkai_stats_store");
+    const raw = localStorage.getItem(STORAGE_KEYS.stats);
     if (raw) return JSON.parse(raw);
   } catch (e) {}
   return null;
@@ -246,7 +239,7 @@ function getStoredStats() {
 
 function saveStoredStats(stats) {
   try {
-    localStorage.setItem("osekkai_stats_store", JSON.stringify(stats));
+    localStorage.setItem(STORAGE_KEYS.stats, JSON.stringify(stats));
   } catch (e) {}
 }
 
@@ -273,29 +266,62 @@ async function fetchStats() {
   updateStatsUI();
 }
 
+// 完了済みタスクのID記録（サーバー側で削除が保持されない環境でも、
+// 一度完了したタスクが一覧に復活しないようにするため）
+function getCompletedTaskIds() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.completedIds);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return [];
+}
+
+function addCompletedTaskId(taskId) {
+  try {
+    const ids = getCompletedTaskIds();
+    if (!ids.includes(taskId)) {
+      ids.push(taskId);
+      localStorage.setItem(STORAGE_KEYS.completedIds, JSON.stringify(ids));
+    }
+  } catch (e) {}
+}
+
 async function fetchTasks() {
+  const completedIds = getCompletedTaskIds();
+  let apiTasks = null;
+
   try {
     const res = await apiFetch("/api/tasks");
     if (res) {
       const data = await res.json();
-      if (Array.isArray(data) && data.length > 0) {
-        tasksState = data;
-        saveStoredTasks(tasksState);
-        renderTasks();
-        updateWardCounts();
-        return;
+      if (Array.isArray(data)) {
+        apiTasks = data;
       }
     }
   } catch (err) {
     console.warn("⚠️ API fetchTasks fallback to local storage:", err);
   }
 
+  if (apiTasks !== null) {
+    // APIが使える場合: APIの内容を正としつつ、APIにまだ無い（または
+    // サーバー側で保持されなかった）自分のローカル投稿もマージして保持する
+    const apiIds = new Set(apiTasks.map(t => t.id));
+    const stored = getStoredTasks();
+    const localOnly = (stored || []).filter(t => !apiIds.has(t.id) && !completedIds.includes(t.id));
+    tasksState = [...localOnly, ...apiTasks.filter(t => !completedIds.includes(t.id))];
+    // 0件なら正直に0件表示する（デモ募集は置かない）
+    saveStoredTasks(tasksState);
+    renderTasks();
+    updateWardCounts();
+    return;
+  }
+
   // Fallback for offline/client state
   const local = getStoredTasks();
-  if (local && Array.isArray(local) && local.length > 0) {
-    tasksState = local;
+  if (local && Array.isArray(local)) {
+    tasksState = local.filter(t => !completedIds.includes(t.id));
   } else {
-    tasksState = [...INITIAL_SAMPLE_TASKS];
+    tasksState = [...INITIAL_SAMPLE_TASKS]; // 空配列（デモデータなし）
     saveStoredTasks(tasksState);
   }
   renderTasks();
@@ -346,12 +372,17 @@ async function createNewTask(taskData) {
 }
 
 async function completeTaskApi(taskId) {
+  let apiCounted = false;
   try {
     const res = await apiFetch(`/api/tasks/${taskId}/complete`, { method: "POST" });
     if (res) {
       const data = await res.json();
       if (data.npoStats) {
+        // API側の集計値をそのまま採用する（ここで再度加算すると二重計上になる）。
+        // サーバーに存在しないタスク（サンプル等）の完了ではサーバーは加算しないため、
+        // その場合は下のローカル集計に任せる。
         npoStatsState = data.npoStats;
+        apiCounted = data.completed !== false;
         saveStoredStats(npoStatsState);
         updateStatsUI();
       }
@@ -361,48 +392,109 @@ async function completeTaskApi(taskId) {
   }
 
   tasksState = tasksState.filter(t => t.id !== taskId);
+  addCompletedTaskId(taskId);
   saveStoredTasks(tasksState);
-  npoStatsState.totalMealsServed = (npoStatsState.totalMealsServed || 0) + 1;
-  npoStatsState.totalDonationYen = (npoStatsState.totalDonationYen || 0) + 500;
-  saveStoredStats(npoStatsState);
-  updateStatsUI();
+  if (!apiCounted) {
+    // APIが使えなかった場合のみ、このブラウザ内で集計する
+    npoStatsState.totalMealsServed = (npoStatsState.totalMealsServed || 0) + 1;
+    npoStatsState.totalDonationYen = (npoStatsState.totalDonationYen || 0) + 500;
+    saveStoredStats(npoStatsState);
+    updateStatsUI();
+  }
   renderTasks();
   updateWardCounts();
 }
 
+// --- チャット履歴のローカル保存（APIが使えない環境でも会話が消えないように） ---
+const LOCAL_AUTO_REPLIES = [
+  "ご連絡ありがとうございます！お待ちしておりますね。",
+  "ありがとうございます！助かります。どうぞ気をつけてお越しください。",
+  "承知いたしました！お会いできるのを楽しみにしております。"
+];
+
+function getStoredChats() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.chats);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return {};
+}
+
+function saveStoredChats() {
+  try {
+    localStorage.setItem(STORAGE_KEYS.chats, JSON.stringify(chatHistories));
+  } catch (e) {}
+}
+
+function chatTimeNow() {
+  const now = new Date();
+  return `${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`;
+}
+
 async function fetchChatMessages(taskId) {
   try {
-    const res = await fetch(`/api/chat/${taskId}`);
-    if (res.ok) {
-      const messages = await res.json();
-      chatHistories[taskId] = messages;
-      if (currentChatTaskId === taskId) {
-        renderChatMessages();
+    const res = await apiFetch(`/api/chat/${taskId}`);
+    if (res) {
+      const serverMessages = await res.json();
+      if (Array.isArray(serverMessages)) {
+        // サーバー履歴を正とし、サーバーに届いていない自分のローカル送信分があれば保持する
+        const localOnly = (chatHistories[taskId] || []).filter(m =>
+          m._local && !serverMessages.some(s => s.sender === m.sender && s.text === m.text)
+        );
+        chatHistories[taskId] = [...serverMessages, ...localOnly];
+        saveStoredChats();
+        if (currentChatTaskId === taskId) {
+          renderChatMessages();
+        }
+        return;
       }
     }
   } catch (err) {
     console.warn("⚠️ API fetchChatMessages error:", err);
   }
+
+  // APIが使えない場合はローカル保存分を表示する
+  if (!chatHistories[taskId]) {
+    chatHistories[taskId] = getStoredChats()[taskId] || [];
+  }
+  if (currentChatTaskId === taskId) {
+    renderChatMessages();
+  }
 }
 
 async function postChatMessage(taskId, text) {
   try {
-    const res = await fetch(`/api/chat/${taskId}`, {
+    const res = await apiFetch(`/api/chat/${taskId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text: text, sender: "me" })
     });
-    if (res.ok) {
+    if (res) {
+      // サーバー側の自動返信（約0.8秒後）を拾うため、少し待ってから再取得する
       setTimeout(() => fetchChatMessages(taskId), 300);
+      setTimeout(() => fetchChatMessages(taskId), 1300);
+      return;
     }
   } catch (err) {
     console.warn("⚠️ API postChatMessage error:", err);
-    if (!chatHistories[taskId]) chatHistories[taskId] = [];
-    const now = new Date();
-    const timeStr = `${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`;
-    chatHistories[taskId].push({ sender: "me", text: text, time: timeStr });
-    renderChatMessages();
   }
+
+  // APIが使えない場合のローカル動作: 自分のメッセージを保存し、
+  // サーバー接続時と同じ自動返信文で相手からの返信を再現する
+  if (!chatHistories[taskId]) chatHistories[taskId] = getStoredChats()[taskId] || [];
+  chatHistories[taskId].push({ sender: "me", text: text, time: chatTimeNow(), _local: true });
+  saveStoredChats();
+  renderChatMessages();
+
+  setTimeout(() => {
+    if (!chatHistories[taskId]) chatHistories[taskId] = [];
+    const reply = LOCAL_AUTO_REPLIES[Math.floor(Math.random() * LOCAL_AUTO_REPLIES.length)];
+    chatHistories[taskId].push({ sender: "them", text: reply, time: chatTimeNow(), _local: true });
+    saveStoredChats();
+    if (currentChatTaskId === taskId) {
+      renderChatMessages();
+    }
+  }, 800);
 }
 
 // Initialize Application
@@ -429,66 +521,96 @@ document.addEventListener("DOMContentLoaded", () => {
   setInterval(() => {
     fetchTasks();
     fetchStats();
-    fetchUserVerification();
+    // 本人確認状態はポーリング対象にしない（自分のブラウザの保存状態が正のため）
   }, 5000);
 });
 
-// Initialize LINE LIFF SDK & Real OAuth Profile Handling
+// LINE LIFF SDK の初期化状態（実際に初期化できた場合のみ true）
+let liffReady = false;
+// SDK 自体が読み込めなかった場合に true
+let liffSdkMissing = false;
+// liff.init() が失敗した場合、そのエラー内容を保持する
+let liffInitError = null;
+
+// ヘッダーの LINE ボタンのラベルを、実際の連携状態に合わせて更新する
+function updateLineStatusUI() {
+  const lineStatusLabel = document.getElementById("lineStatusLabel");
+  if (!lineStatusLabel) return;
+  if (lineUserProfile.isLoggedIn) {
+    lineStatusLabel.textContent = `LINE: ${lineUserProfile.displayName}様`;
+  } else {
+    lineStatusLabel.textContent = "LINE連携";
+  }
+}
+
+// LINE の実プロフィールを取得して状態に反映する（LIFF 公式の手順）
+async function applyLineProfile() {
+  const profile = await liff.getProfile();
+  lineUserProfile.displayName = profile.displayName;
+  lineUserProfile.pictureUrl = profile.pictureUrl || "";
+  lineUserProfile.userId = profile.userId;
+  lineUserProfile.isLoggedIn = true;
+  updateLineStatusUI();
+  return profile;
+}
+
+// Initialize LINE LIFF SDK
+// 連携状態は「LIFF SDK が実際に初期化でき、かつ LINE 側でログイン済み」の
+// 場合にだけ判定します。URLパラメータやローカル保存だけで「連携完了」とは
+// しません（以前の実装は code パラメータがあるだけで固定の名前で
+// ログイン完了表示になってしまう問題がありました）。
+// 手順は LIFF 公式ドキュメント通り: liff.init() → liff.isLoggedIn() を確認し、
+// 未ログインなら liff.login()、ログイン済みなら liff.getProfile() で実プロフィールを
+// 表示します。ログアウトは liff.logout() を使います。
 function initLineLiff() {
   const btnLineLogin = document.getElementById("btnLineLogin");
-  const lineStatusLabel = document.getElementById("lineStatusLabel");
-
-  // Check URL query parameters for returning LINE OAuth authorization code
-  const urlParams = new URLSearchParams(window.location.search);
-  if (urlParams.has("code") || urlParams.get("state") === "line_login") {
-    lineUserProfile.isLoggedIn = true;
-    lineUserProfile.displayName = "小松 貴子";
-    if (lineStatusLabel) lineStatusLabel.textContent = `LINE: 小松 貴子様`;
-    localStorage.setItem("line_user_logged_in", "true");
-    localStorage.setItem("line_user_name", "小松 貴子");
-    window.history.replaceState({}, document.title, window.location.pathname);
-    showToast("🎉 本物のLINEアカウント（小松貴子様）との公式ログイン連携が正常に完了しました！");
-  } else if (localStorage.getItem("line_user_logged_in") === "true") {
-    lineUserProfile.isLoggedIn = true;
-    let savedName = localStorage.getItem("line_user_name") || "小松 貴子";
-    if (savedName === "LINE本人認証済み" || savedName === "LINE連携ユーザー" || savedName.includes("認証完了")) {
-      savedName = "小松 貴子";
-      localStorage.setItem("line_user_name", "小松 貴子");
-    }
-    lineUserProfile.displayName = savedName;
-    if (lineStatusLabel) lineStatusLabel.textContent = `LINE: ${savedName}様`;
-  }
-
-  if (typeof liff !== "undefined" && window.LINE_CONFIG && LINE_CONFIG.liffId) {
-    liff.init({ liffId: LINE_CONFIG.liffId }).then(() => {
-      if (liff.isLoggedIn()) {
-        liff.getProfile().then(profile => {
-          lineUserProfile.displayName = profile.displayName;
-          lineUserProfile.pictureUrl = profile.pictureUrl || "";
-          lineUserProfile.userId = profile.userId;
-          lineUserProfile.isLoggedIn = true;
-          localStorage.setItem("line_user_logged_in", "true");
-          localStorage.setItem("line_user_name", profile.displayName);
-
-          if (lineStatusLabel) lineStatusLabel.textContent = `LINE: ${profile.displayName}様`;
-          showToast(`💬 本物のLINEアカウント（${profile.displayName}様）でログイン中`);
-        }).catch(err => {
-          console.warn("LINE Profile fetch error:", err);
-        });
-      }
-    }).catch(err => {
-      console.log("LINE LIFF init info:", err.message);
-    });
-  }
-
   if (btnLineLogin) {
     btnLineLogin.addEventListener("click", () => {
       showLineAccountModal();
     });
   }
+
+  if (typeof liff === "undefined") {
+    // SDK のスクリプトが読み込めなかった（通信環境・広告ブロック等）
+    liffSdkMissing = true;
+    console.warn("LINE LIFF SDK が読み込まれていません");
+    return;
+  }
+  // 注意: LINE_CONFIG は line_config.js で const 宣言されているため
+  // window.LINE_CONFIG では参照できません（const/let は window のプロパティに
+  // なりません）。typeof ガード付きで直接参照します。以前は window.LINE_CONFIG
+  // で判定していたため、この条件で常に弾かれ LIFF が初期化されませんでした。
+  if (typeof LINE_CONFIG === "undefined" || !LINE_CONFIG.liffId) {
+    liffInitError = new Error("LIFF ID が設定されていません");
+    return;
+  }
+
+  liff.init({ liffId: LINE_CONFIG.liffId }).then(() => {
+    liffReady = true;
+    if (liff.isLoggedIn()) {
+      // ログイン済み（LINEアプリ内、またはログイン後に戻ってきた状態）
+      applyLineProfile().then(profile => {
+        showToast(`💬 LINEアカウント（${profile.displayName}様）でログイン中`);
+      }).catch(err => {
+        console.warn("LINE Profile fetch error:", err);
+      });
+    }
+  }).catch(err => {
+    // 初期化に失敗する主な原因: LIFF のエンドポイントURLにこのページのURLが
+    // 登録されていない、LIFF ID の誤り、チャネルの設定不備など。
+    // 失敗を隠さず、モーダルで理由と対処を表示する。
+    liffInitError = err;
+    console.warn("LINE LIFF init error:", err);
+    updateLineStatusUI();
+  });
 }
 
 // Show LINE Account & LIFF Status Modal
+// 状態ごとに正直に表示を切り替えます:
+//  - ログイン済み: 実プロフィール（名前・画像）とログアウトボタンを表示
+//  - 未ログイン（初期化成功）: ログインボタンを表示
+//  - SDK未読込 / 初期化失敗: エラーの内容と再試行ボタンを表示
+//  - 公式アカウントURL未設定: 友だち追加ボタンは出さず、その理由を表示
 function showLineAccountModal() {
   let modal = document.getElementById("lineAccountModal");
   if (!modal) {
@@ -500,6 +622,87 @@ function showLineAccountModal() {
     modal.classList.add("active");
   }
 
+  const officialUrl = (typeof LINE_CONFIG !== "undefined" && LINE_CONFIG.officialAccountUrl) || "";
+  const friendAddHtml = officialUrl
+    ? `<a href="${escapeHTML(officialUrl)}" target="_blank" rel="noopener" class="btn-hero-action" style="display: block; background: white; color: #06c755; border: 2px solid #06c755; width: 100%; font-weight: 800; text-align: center; text-decoration: none; box-sizing: border-box;">
+         <i class="fa-solid fa-user-plus"></i> 公式LINEアカウントを友だち追加
+       </a>`
+    : `<div style="font-size: 0.8rem; color: var(--text-muted); background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 8px; padding: 0.6rem;">
+         公式LINEアカウントは準備中のため、友だち追加はまだ利用できません（アカウント作成後にURLを設定すると、ここにボタンが表示されます）。
+       </div>`;
+
+  let statusHtml = "";
+  let actionHtml = "";
+
+  if (lineUserProfile.isLoggedIn) {
+    statusHtml = `
+      <div style="background: #f0fdf4; border: 1.5px solid #86efac; border-radius: 12px; padding: 1.25rem; margin-bottom: 1.25rem;">
+        ${lineUserProfile.pictureUrl ? `<img src="${escapeHTML(lineUserProfile.pictureUrl)}" alt="LINEプロフィール画像" style="width: 64px; height: 64px; border-radius: 50%; object-fit: cover; margin-bottom: 0.4rem;">` : `<div style="font-size: 2.2rem; margin-bottom: 0.3rem;">💬</div>`}
+        <div style="font-weight: 800; font-size: 1.15rem; color: #166534;">
+          LINE連携完了: ${escapeHTML(lineUserProfile.displayName)} 様
+        </div>
+        <div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.4rem; line-height: 1.5;">
+          LINEアカウントでログイン中です。面倒なパスワード入力なしでご利用いただけます。
+        </div>
+      </div>`;
+    actionHtml = `
+      <button id="btnDoLineLogout" class="btn-hero-action" style="background: #e2e8f0; color: #334155; width: 100%; border: none; font-weight: 800; cursor: pointer;">
+        <i class="fa-solid fa-right-from-bracket"></i> LINE連携を解除する（ログアウト）
+      </button>`;
+  } else if (liffSdkMissing) {
+    statusHtml = `
+      <div id="lineModalError" style="background: #fef2f2; border: 1.5px solid #fca5a5; border-radius: 12px; padding: 1.25rem; margin-bottom: 1.25rem;">
+        <div style="font-size: 2.2rem; margin-bottom: 0.3rem;">⚠️</div>
+        <div style="font-weight: 800; font-size: 1.05rem; color: #991b1b;">LINEとの接続部品（SDK）を読み込めませんでした</div>
+        <div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.4rem; line-height: 1.5;">
+          通信環境の影響で読み込みに失敗した可能性があります。ページを再読み込みしてもう一度お試しください。
+        </div>
+      </div>`;
+    actionHtml = `
+      <button id="btnDoLineRetry" class="btn-hero-action" style="background: #06c755; color: white; width: 100%; border: none; font-weight: 800; font-size: 1.05rem; cursor: pointer;">
+        <i class="fa-solid fa-rotate-right"></i> 再読み込みして再試行
+      </button>`;
+  } else if (liffInitError) {
+    statusHtml = `
+      <div id="lineModalError" style="background: #fef2f2; border: 1.5px solid #fca5a5; border-radius: 12px; padding: 1.25rem; margin-bottom: 1.25rem;">
+        <div style="font-size: 2.2rem; margin-bottom: 0.3rem;">⚠️</div>
+        <div style="font-weight: 800; font-size: 1.05rem; color: #991b1b;">LINE連携の初期化に失敗しました</div>
+        <div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.4rem; line-height: 1.5;">
+          このページのURLが、LINE Developers の LIFF エンドポイントURLに登録されていない場合にこのエラーになります。本番ページ（GitHub Pages）のURLで開いているか、管理者側の設定をご確認ください。
+        </div>
+      </div>`;
+    actionHtml = `
+      <button id="btnDoLineRetry" class="btn-hero-action" style="background: #06c755; color: white; width: 100%; border: none; font-weight: 800; font-size: 1.05rem; cursor: pointer;">
+        <i class="fa-solid fa-rotate-right"></i> 再読み込みして再試行
+      </button>`;
+  } else if (liffReady) {
+    statusHtml = `
+      <div style="background: #f8fafc; border: 1.5px solid #cbd5e1; border-radius: 12px; padding: 1.25rem; margin-bottom: 1.25rem;">
+        <div style="font-size: 2.2rem; margin-bottom: 0.3rem;">💬</div>
+        <div style="font-weight: 800; font-size: 1.15rem; color: #334155;">LINEアカウントと連携していません</div>
+        <div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.4rem; line-height: 1.5;">
+          LINEで連携すると、面倒なパスワード入力なしでワンタップログインが可能になります。<br>※ログインは LINE の画面に移動して行います。このページのURLが LIFF のエンドポイントに登録されていないプレビュー環境では、ログインが完了しない場合があります。
+        </div>
+      </div>`;
+    actionHtml = `
+      <button id="btnDoLineLogin" class="btn-hero-action" style="background: #06c755; color: white; width: 100%; border: none; font-weight: 800; font-size: 1.05rem; cursor: pointer;">
+        <i class="fa-brands fa-line" style="font-size: 1.2rem;"></i> LINEアカウントで簡単ログイン
+      </button>`;
+  } else {
+    statusHtml = `
+      <div style="background: #f8fafc; border: 1.5px solid #cbd5e1; border-radius: 12px; padding: 1.25rem; margin-bottom: 1.25rem;">
+        <div style="font-size: 2.2rem; margin-bottom: 0.3rem;">💬</div>
+        <div style="font-weight: 800; font-size: 1.15rem; color: #334155;">LINE連携の状態を確認中です…</div>
+        <div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.4rem; line-height: 1.5;">
+          数秒待っても変わらない場合は、ページを再読み込みしてください。
+        </div>
+      </div>`;
+    actionHtml = `
+      <button id="btnDoLineRetry" class="btn-hero-action" style="background: #06c755; color: white; width: 100%; border: none; font-weight: 800; font-size: 1.05rem; cursor: pointer;">
+        <i class="fa-solid fa-rotate-right"></i> 再読み込みして再試行
+      </button>`;
+  }
+
   modal.innerHTML = `
     <div class="modal-card" style="max-width: 480px; text-align: center; padding: 1.5rem;">
       <div class="modal-header" style="justify-content: space-between; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.75rem; margin-bottom: 1rem;">
@@ -509,40 +712,14 @@ function showLineAccountModal() {
         <button class="btn-close-modal" id="btnCloseLineModalHeader">&times;</button>
       </div>
 
-      <div style="background: ${lineUserProfile.isLoggedIn ? '#f0fdf4' : '#f8fafc'}; border: 1.5px solid ${lineUserProfile.isLoggedIn ? '#86efac' : '#cbd5e1'}; border-radius: 12px; padding: 1.25rem; margin-bottom: 1.25rem;">
-        <div style="font-size: 2.2rem; margin-bottom: 0.3rem;">💬</div>
-        <div style="font-weight: 800; font-size: 1.15rem; color: ${lineUserProfile.isLoggedIn ? '#166534' : '#334155'};">
-          ${lineUserProfile.isLoggedIn ? `LINE連携完了: ${escapeHTML(lineUserProfile.displayName)} 様` : 'LINEアカウントと連携していません'}
-        </div>
-        <div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.4rem; line-height: 1.5;">
-          ${lineUserProfile.isLoggedIn 
-            ? 'LINE通知およびご家族安心見守り機能が有効になっています。' 
-            : 'LINEで連携すると、面倒なパスワード入力なしでワンタップログインが可能になり、ご家族への安心見守り通知も届きます。'}
-        </div>
-      </div>
+      ${statusHtml}
 
       <div style="display: flex; flex-direction: column; gap: 0.75rem;">
-        ${!lineUserProfile.isLoggedIn ? `
-          <button id="btnDoLineLogin" class="btn-hero-action" style="background: #06c755; color: white; width: 100%; border: none; font-weight: 800; font-size: 1.05rem; cursor: pointer;">
-            <i class="fa-brands fa-line" style="font-size: 1.2rem;"></i> LINEアカウントで簡単ログイン
-          </button>
-        ` : `
-          <button id="btnDoLineClose" class="btn-hero-action" style="background: #059669; color: white; width: 100%; border: none; font-weight: 800; cursor: pointer;">
-            <i class="fa-solid fa-circle-check"></i> 連携済み（閉じる）
-          </button>
-        `}
-
+        ${actionHtml}
+        ${friendAddHtml}
         <button id="btnDoLineCancel" class="btn-hero-action" style="background: #e2e8f0; color: #334155; width: 100%; border: none; margin-top: 0.25rem; cursor: pointer;">
           閉じる
         </button>
-
-        ${!lineUserProfile.isLoggedIn ? `
-          <div style="margin-top: 0.5rem; font-size: 0.75rem; color: var(--text-muted);">
-            <a href="#" id="btnDemoLineLoginLink" style="color: #64748b; text-decoration: underline;">
-              （※動作確認用：ワンタップでデモ連携を試す）
-            </a>
-          </div>
-        ` : ''}
       </div>
     </div>
   `;
@@ -556,45 +733,35 @@ function showLineAccountModal() {
     });
   }
 
+  const btnDoLineLogout = document.getElementById("btnDoLineLogout");
+  if (btnDoLineLogout) {
+    btnDoLineLogout.addEventListener("click", (e) => {
+      e.preventDefault();
+      triggerLiffLogoutAction();
+    });
+  }
+
+  const btnDoLineRetry = document.getElementById("btnDoLineRetry");
+  if (btnDoLineRetry) {
+    btnDoLineRetry.addEventListener("click", () => {
+      location.reload();
+    });
+  }
+
   const btnCloseLineModalHeader = document.getElementById("btnCloseLineModalHeader");
   if (btnCloseLineModalHeader) {
     btnCloseLineModalHeader.addEventListener("click", closeLineAccountModal);
-  }
-
-  const btnDoLineClose = document.getElementById("btnDoLineClose");
-  if (btnDoLineClose) {
-    btnDoLineClose.addEventListener("click", closeLineAccountModal);
   }
 
   const btnDoLineCancel = document.getElementById("btnDoLineCancel");
   if (btnDoLineCancel) {
     btnDoLineCancel.addEventListener("click", closeLineAccountModal);
   }
-
-  const btnDemoLineLoginLink = document.getElementById("btnDemoLineLoginLink");
-  if (btnDemoLineLoginLink) {
-    btnDemoLineLoginLink.addEventListener("click", (e) => {
-      e.preventDefault();
-      simulateLineLogin("浜松市民（デモ連携）");
-    });
-  }
 }
 
 function closeLineAccountModal() {
   const modal = document.getElementById("lineAccountModal");
   if (modal) modal.classList.remove("active");
-}
-
-function simulateLineLogin(userName) {
-  lineUserProfile.displayName = userName || "浜松 太郎";
-  lineUserProfile.userId = "line-demo-99";
-  lineUserProfile.isLoggedIn = true;
-
-  const lineStatusLabel = document.getElementById("lineStatusLabel");
-  if (lineStatusLabel) lineStatusLabel.textContent = `LINE: ${lineUserProfile.displayName}様`;
-
-  showToast(`🎉 LINEアカウント「${lineUserProfile.displayName}様」と正常に連携が完了しました！`);
-  closeLineAccountModal();
 }
 
 function triggerLiffLoginAction() {
@@ -604,55 +771,63 @@ function triggerLiffLoginAction() {
     return;
   }
 
-  const liffIdVal = (window.LINE_CONFIG && window.LINE_CONFIG.liffId) || "2011208076-70q7lR0Q";
-  const channelId = liffIdVal.split("-")[0] || "2011208076";
-  
-  let currentOrigin = window.location.href.split("?")[0].split("#")[0];
-  if (currentOrigin.startsWith("file://")) {
-    currentOrigin = "http://localhost:3000/";
+  // 初期化できていない場合は、理由に応じて正直に案内する（完了したフリはしない）
+  if (liffSdkMissing) {
+    showToast("⚠️ LINEの読み込みに失敗しています。ページを再読み込みしてもう一度お試しください。");
+    return;
   }
-  const redirectUri = encodeURIComponent(currentOrigin);
+  if (liffInitError) {
+    showToast("⚠️ LINE連携の初期化に失敗しました。このページのURLが LIFF のエンドポイントに登録されているかご確認ください。");
+    return;
+  }
+  if (!liffReady || typeof liff === "undefined") {
+    showToast("ℹ️ LINE連携の確認中です。数秒待ってからもう一度お試しください。");
+    return;
+  }
 
-  // 1. If LIFF SDK is active inside LINE App
-  if (typeof liff !== "undefined" && liff.isInit && liff.isInit()) {
-    try {
-      if (liff.isLoggedIn()) {
-        liff.getProfile().then(profile => {
-          lineUserProfile.displayName = profile.displayName;
-          lineUserProfile.pictureUrl = profile.pictureUrl || "";
-          lineUserProfile.userId = profile.userId;
-          lineUserProfile.isLoggedIn = true;
-          localStorage.setItem("line_user_logged_in", "true");
-          localStorage.setItem("line_user_name", profile.displayName);
-
-          const lineStatusLabel = document.getElementById("lineStatusLabel");
-          if (lineStatusLabel) lineStatusLabel.textContent = `LINE: ${profile.displayName}様`;
-          showToast(`🎉 本物のLINEアカウント「${profile.displayName}様」と連携が完了しました！`);
-          closeLineAccountModal();
-        });
-        return;
-      } else {
-        liff.login({ redirectUri: currentOrigin });
-        return;
-      }
-    } catch (e) {
-      console.warn("LIFF in-app login failed, redirecting to OAuth page:", e);
+  try {
+    if (liff.isLoggedIn()) {
+      // 既に LINE 側でログイン済みなら、実プロフィールを取得して連携表示にする
+      applyLineProfile().then(profile => {
+        showToast(`🎉 LINEアカウント「${profile.displayName}様」と連携が完了しました！`);
+        closeLineAccountModal();
+      }).catch(err => {
+        console.warn("LINE Profile fetch error:", err);
+        showToast("⚠️ LINEプロフィールの取得に失敗しました。もう一度お試しください。");
+      });
+      return;
     }
+    // LIFF 公式のログイン処理: LINE のログイン画面へ移動し、認証後に
+    // LIFF のエンドポイントURL（登録済みのページ）へ戻ってきます。
+    // そのため、開いているページのURLがエンドポイントに登録されていない
+    // 環境（プレビュー等）ではログインが完結しません。
+    liff.login();
+  } catch (e) {
+    console.warn("LIFF login failed:", e);
+    showToast("⚠️ LINEログインを開始できませんでした。このページのURLが LIFF のエンドポイントに登録されているかご確認ください。");
   }
+}
 
-  // 2. Direct Redirect to Real LINE Official OAuth Authorization Page
-  const lineAuthUrl = `https://access.line.me/oauth2/v2.1/authorize?response_type=code&client_id=${channelId}&redirect_uri=${redirectUri}&state=line_login&scope=profile%20openid`;
-
-  showToast("🔄 LINE公式のログイン画面（access.line.me）へ遷移します...");
-  setTimeout(() => {
-    window.location.href = lineAuthUrl;
-  }, 300);
+// LINE ログアウト（連携解除）: LIFF 公式の liff.logout() を使い、
+// 状態をリセットするためにページを再読み込みします。
+function triggerLiffLogoutAction() {
+  try {
+    if (typeof liff !== "undefined" && liffReady && liff.isLoggedIn()) {
+      liff.logout();
+    }
+  } catch (e) {
+    console.warn("LIFF logout error:", e);
+  }
+  lineUserProfile = { displayName: "", pictureUrl: "", userId: "", isLoggedIn: false };
+  updateLineStatusUI();
+  showToast("LINE連携を解除しました");
+  location.reload();
 }
 
 window.showLineAccountModal = showLineAccountModal;
 window.closeLineAccountModal = closeLineAccountModal;
-window.simulateLineLogin = simulateLineLogin;
 window.triggerLiffLoginAction = triggerLiffLoginAction;
+window.triggerLiffLogoutAction = triggerLiffLogoutAction;
 
 // Render Tasks Cards Grid with Category & Ward Filters
 function renderTasks() {
@@ -913,6 +1088,13 @@ function setupEventListeners() {
     const simResult = document.getElementById("verificationSimResult");
     if (simResult) simResult.style.display = "none";
 
+    // 認証実行ボタンを初期状態に戻す（認証完了時に非表示にしたままにしない）
+    const ekycBtn = document.getElementById("btnSubmitEkyc");
+    if (ekycBtn) {
+      ekycBtn.style.display = "";
+      ekycBtn.style.pointerEvents = "auto";
+    }
+
     const selectedDocType = document.querySelector('input[name="docType"]:checked')?.value || "mynumber";
     updateDocTypeUI(selectedDocType);
 
@@ -944,13 +1126,13 @@ function setupEventListeners() {
 
   if (idDropzoneFront) {
     idDropzoneFront.addEventListener("click", () => {
-      if (fileInputFront) fileInputFront.click();
+      handleCaptureRequest("front", fileInputFront);
     });
   }
 
   if (idDropzoneBack) {
     idDropzoneBack.addEventListener("click", () => {
-      if (fileInputBack) fileInputBack.click();
+      handleCaptureRequest("back", fileInputBack);
     });
   }
 
@@ -998,6 +1180,10 @@ function setupEventListeners() {
 
   if (btnTakeSnap) {
     btnTakeSnap.addEventListener("click", () => {
+      if (!cameraStream) {
+        showToast("⚠️ カメラが起動していません。下の「カメラアプリで撮影／写真から選ぶ」からお試しください。");
+        return;
+      }
       if (cameraVideo && cameraCanvas) {
         const context = cameraCanvas.getContext("2d");
         cameraCanvas.width = cameraVideo.videoWidth || 640;
@@ -1041,47 +1227,12 @@ function setupEventListeners() {
     });
   }
 
-  if (fileInputFront) {
-    fileInputFront.addEventListener("change", (e) => {
-      const file = e.target.files[0];
-      const selectedDocType = document.querySelector('input[name="docType"]:checked')?.value || "mynumber";
-      const docName = selectedDocType === "license" ? "運転免許証" : "マイナンバーカード";
-      if (file) {
-        const reader = new FileReader();
-        reader.onload = function(evt) {
-          frontImageData = evt.target.result;
-          idDropzoneFront.style.background = "#d1fae5";
-          idDropzoneFront.style.borderColor = "#059669";
-          idDropzoneFront.innerHTML = `
-            <img src="${evt.target.result}" style="width: 100%; height: 75px; object-fit: cover; border-radius: var(--radius-sm); margin-bottom: 0.3rem; border: 1.5px solid #059669;">
-            <div style="font-weight:800; color:#064e3b; font-size:0.85rem;"><i class="fa-solid fa-circle-check" style="color:#059669;"></i> 表面 撮影成功</div>
-          `;
-          showToast(`📸 ${docName}【表面】の写真を撮影・選択しました！`);
-        };
-        reader.readAsDataURL(file);
-      }
-    });
-  }
-
-  if (fileInputBack) {
-    fileInputBack.addEventListener("change", (e) => {
-      const file = e.target.files[0];
-      const selectedDocType = document.querySelector('input[name="docType"]:checked')?.value || "mynumber";
-      const docName = selectedDocType === "license" ? "運転免許証" : "マイナンバーカード";
-      if (file) {
-        const reader = new FileReader();
-        reader.onload = function(evt) {
-          backImageData = evt.target.result;
-          idDropzoneBack.style.background = "#d1fae5";
-          idDropzoneBack.style.borderColor = "#059669";
-          idDropzoneBack.innerHTML = `
-            <img src="${evt.target.result}" style="width: 100%; height: 75px; object-fit: cover; border-radius: var(--radius-sm); margin-bottom: 0.3rem; border: 1.5px solid #059669;">
-            <div style="font-weight:800; color:#064e3b; font-size:0.85rem;"><i class="fa-solid fa-circle-check" style="color:#059669;"></i> 裏面 撮影成功</div>
-          `;
-          showToast(`📸 ${docName}【裏面】の写真を撮影・選択しました！`);
-        };
-        reader.readAsDataURL(file);
-      }
+  if (btnFallbackGallery) {
+    btnFallbackGallery.addEventListener("click", () => {
+      stopCameraStream();
+      closeModal(cameraModal);
+      const input = activeCaptureTarget === "back" ? fileInputBack : fileInputFront;
+      if (input) input.click();
     });
   }
 
@@ -1125,9 +1276,10 @@ function setupEventListeners() {
         userVerification.docType = selectedDocType;
 
         updateVerificationBadgesUI();
-
+        // 認証結果は自分のブラウザに保存し、APIにも送る（どちらか一方でも残れば復元できる）
+        saveStoredVerification(userVerification);
         try {
-          await fetch("/api/user/verify", {
+          await apiFetch("/api/user/verify", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ requester: true, helper: true, docType: selectedDocType })
@@ -1322,12 +1474,134 @@ window.completeTaskAndDonate = async function(taskId) {
 };
 
 // Helper Functions & Utilities
+
+// --- Camera (本人確認書類の撮影) ---
+function stopCameraStream() {
+  if (cameraStream) {
+    cameraStream.getTracks().forEach(track => track.stop());
+    cameraStream = null;
+  }
+  if (cameraVideo) {
+    cameraVideo.srcObject = null;
+  }
+}
+
+// getUserMedia の失敗理由ごとに、利用者向けの日本語メッセージを返す
+function cameraErrorMessage(err) {
+  const name = (err && err.name) || "";
+  switch (name) {
+    case "NotAllowedError":
+    case "PermissionDeniedError":
+      return "カメラの使用が許可されませんでした。ブラウザや端末の設定で、このサイトへのカメラ許可をオンにしてから、もう一度お試しください。アプリ内ブラウザでは許可できない場合があります。";
+    case "NotFoundError":
+    case "DevicesNotFoundError":
+    case "OverconstrainedError":
+      return "使えるカメラが見つかりませんでした。カメラ付きの端末でお試しください。";
+    case "NotReadableError":
+    case "TrackStartError":
+      return "カメラが他のアプリで使用中のため起動できませんでした。他のカメラアプリを終了してから、もう一度お試しください。";
+    case "SecurityError":
+      return "このページの表示方法ではカメラを使えません（安全な接続が必要です）。";
+    default:
+      if (err && err.message === "camera unsupported") {
+        return "このブラウザではページ内カメラに対応していません。";
+      }
+      return "カメラの起動中に問題が発生しました。";
+  }
+}
+
+function showCameraError(err) {
+  const box = document.getElementById("cameraErrorBox");
+  const text = document.getElementById("cameraErrorText");
+  if (text) text.textContent = cameraErrorMessage(err);
+  if (box) box.style.display = "block";
+  if (btnTakeSnap) btnTakeSnap.style.display = "none";
+}
+
+function hideCameraError() {
+  const box = document.getElementById("cameraErrorBox");
+  if (box) box.style.display = "none";
+  if (btnTakeSnap) btnTakeSnap.style.display = "";
+}
+
+// 撮影ボタンが押されたときの入口。
+// ・ページ内カメラ（getUserMedia）が使える環境では、ユーザーのタップ操作の
+//   ハンドラ内からそのまま権限リクエストまで進める（権限ダイアログが出やすい）。
+// ・使えない環境（アプリ内ブラウザ等）では、非同期処理を挟まずタップの流れの
+//   中で直接ファイル入力を開く。capture="environment" 付きなので、Android では
+//   端末のカメラアプリが起動する。非同期の後から input.click() を呼ぶ方式は
+//   ブラウザにブロックされて「何も起きない」ことがあるため避ける。
+function handleCaptureRequest(target, fallbackFileInput) {
+  activeCaptureTarget = target === "back" ? "back" : "front";
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showToast("ℹ️ このブラウザではページ内カメラが使えないため、カメラアプリ／写真選択を開きます");
+    if (fallbackFileInput) fallbackFileInput.click();
+    return;
+  }
+  openCameraForCapture(target, fallbackFileInput);
+}
+
+async function startCameraStream(target) {
+  activeCaptureTarget = target === "back" ? "back" : "front";
+
+  const titleEl = document.getElementById("cameraModalTitle");
+  const guideEl = document.getElementById("cameraGuideText");
+  const sideLabel = activeCaptureTarget === "back" ? "【裏面】" : "【表面】";
+  if (titleEl) titleEl.textContent = `📷 カメラでカードの${sideLabel}を撮影`;
+  if (guideEl) guideEl.textContent = `枠内にカードの${sideLabel}を合わせて「写真を撮影する」を押してください`;
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !cameraVideo) {
+    const err = new Error("camera unsupported");
+    err.name = "NotSupportedError";
+    throw err;
+  }
+  stopCameraStream();
+  // 権限リクエストはユーザーのタップから直接たどれるよう、余計な非同期処理を
+  // 挟まずに getUserMedia を呼ぶ
+  cameraStream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: "environment" },
+    audio: false
+  });
+  cameraVideo.muted = true;
+  cameraVideo.srcObject = cameraStream;
+  try {
+    await cameraVideo.play();
+  } catch (playErr) {
+    // autoplay / playsinline / muted が揃っていれば通常は再生できる。
+    // 再生開始だけ失敗しても映像自体は表示される場合があるため、致命扱いにしない
+    console.warn("camera video play() warning:", playErr);
+  }
+}
+
+// カメラモーダルを開く。起動に失敗した場合はモーダル内に理由を表示し、
+// 「カメラアプリで撮影／写真から選ぶ」ボタン（利用者のタップで確実に開ける）
+// へ誘導する。以前は非同期処理の後で自動的にファイル選択を開いていたが、
+// ブラウザにブロックされて何も起きないケースがあったため変更した。
+async function openCameraForCapture(target, fallbackFileInput) {
+  activeCaptureTarget = target === "back" ? "back" : "front";
+  hideCameraError();
+  openModal(cameraModal);
+  try {
+    await startCameraStream(target);
+    hideCameraError();
+  } catch (err) {
+    console.warn("Camera unavailable:", err);
+    stopCameraStream();
+    showCameraError(err);
+    showToast("⚠️ " + cameraErrorMessage(err));
+  }
+}
+
 function openModal(modal) {
   if (modal) modal.classList.add("active");
 }
 
 function closeModal(modal) {
   if (modal) modal.classList.remove("active");
+  if (modal === cameraModal) {
+    // どの閉じ方（×ボタン・外側タップ等）でもカメラは確実に止める
+    stopCameraStream();
+  }
   if (modal === chatModal) {
     if (chatPollingTimer) {
       clearInterval(chatPollingTimer);

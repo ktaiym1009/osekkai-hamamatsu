@@ -367,8 +367,10 @@
       </div>
 
       <!-- Standard Cross-Platform File & Camera Inputs -->
-      <input type="file" id="fileInputFront" accept="image/*" style="display: none;">
-      <input type="file" id="fileInputBack" accept="image/*" style="display: none;">
+      <!-- capture="environment" により、アプリ内ブラウザ等でページ内カメラが
+           使えない環境でも、タップで端末のカメラアプリが直接起動します -->
+      <input type="file" id="fileInputFront" accept="image/*" capture="environment" style="display: none;">
+      <input type="file" id="fileInputBack" accept="image/*" capture="environment" style="display: none;">
 
       <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; margin-bottom: 1.25rem;">
         <button type="button" class="id-upload-dropzone" id="idDropzoneFront" style="padding: 1.25rem; cursor: pointer; display: block; width: 100%; border: 2px dashed var(--primary); background: var(--primary-light); border-radius: var(--radius-md); text-align: center; transition: all 0.2s ease;">
@@ -408,19 +410,29 @@
       </div>
 
       <div style="position: relative; width: 100%; height: 290px; background: #0f172a; border-radius: var(--radius-md); overflow: hidden; margin-bottom: 1rem; border: 2px solid var(--border);">
-        <video id="cameraVideo" autoplay playsinline style="width: 100%; height: 100%; object-fit: cover;"></video>
+        <video id="cameraVideo" autoplay muted playsinline style="width: 100%; height: 100%; object-fit: cover;"></video>
         <div style="position: absolute; inset: 15px; border: 3px dashed #38bdf8; border-radius: 12px; pointer-events: none; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.2);">
           <span style="color: white; font-weight: 800; font-size: 0.95rem; text-shadow: 0 2px 4px rgba(0,0,0,0.9);" id="cameraGuideText">枠内にカードを合わせて「写真を撮影する」を押してください</span>
         </div>
       </div>
       <canvas id="cameraCanvas" style="display: none;"></canvas>
 
+      <div id="cameraErrorBox" style="display: none; background: #fef2f2; border: 1.5px solid #fca5a5; border-radius: var(--radius-md); padding: 0.9rem; margin-bottom: 1rem; text-align: left;">
+        <div style="font-weight: 800; color: #991b1b; font-size: 0.95rem; margin-bottom: 0.3rem;">
+          <i class="fa-solid fa-triangle-exclamation"></i> カメラを起動できませんでした
+        </div>
+        <div id="cameraErrorText" style="font-size: 0.85rem; color: #7f1d1d; line-height: 1.5;"></div>
+        <div style="font-size: 0.85rem; color: #7f1d1d; line-height: 1.5; margin-top: 0.3rem;">
+          下の「カメラアプリで撮影／写真から選ぶ」ボタンからでも撮影・選択できます。
+        </div>
+      </div>
+
       <button class="btn-hero-action" id="btnTakeSnap" style="width: 100%; background: var(--primary); color: white; font-size: 1.15rem;">
         <i class="fa-solid fa-camera"></i> 📸 写真を撮影する
       </button>
-      
+
       <button class="btn-hero-action" id="btnFallbackGallery" style="width: 100%; background: #64748b; color: white; margin-top: 0.5rem; font-size: 0.9rem;">
-        <i class="fa-solid fa-images"></i> 📁 アルバム（写真ライブラリ）から選択
+        <i class="fa-solid fa-images"></i> 📷 カメラアプリで撮影／写真から選ぶ
       </button>
     </div>
   </div>
@@ -508,9 +520,9 @@
       
       <div class="chat-header">
         <div style="display: flex; align-items: center; gap: 0.75rem;">
-          <div class="chat-avatar" id="chatAvatar">鈴</div>
+          <div class="chat-avatar" id="chatAvatar">依</div>
           <div>
-            <div class="chat-user-name" id="chatUserName">鈴木 ハツ子様</div>
+            <div class="chat-user-name" id="chatUserName">依頼者様</div>
             <div class="chat-user-status">
               <span class="online-indicator"></span> 認証済みサポーター・オンライン
             </div>

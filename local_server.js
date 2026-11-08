@@ -13,24 +13,56 @@ const DB_FILE = path.join(__dirname, 'db.json');
 
 let inMemoryDB = null;
 
+// --- Seed (initial) data, used when db.json is missing or unreadable ---
+// NOTE: 初期状態では本人確認は「未認証」が正直な既定値です。
+// NOTE: 第2弾でデモデータを全て削除しました。統計は全て0、募集は0件が
+// 初期状態です（以前はデモ用の数字 1280食/640000円/14箇所/340名 が入っていました）。
+const SEED_DB = {
+  tasks: [],
+  npoStats: { totalMealsServed: 0, totalDonationYen: 0, supportedCafeterias: 0, registeredSupporters: 0 },
+  chatStore: {},
+  autoReplies: [
+    "ご連絡ありがとうございます！お待ちしておりますね。",
+    "ありがとうございます！助かります。どうぞ気をつけてお越しください。",
+    "承知いたしました！お会いできるのを楽しみにしております。"
+  ],
+  userVerifications: { defaultUser: { requester: false, helper: false } }
+};
+
+// Fill in any missing fields so a partial db.json never crashes an endpoint.
+function normalizeDB(data) {
+  const db = (data && typeof data === 'object') ? data : {};
+  if (!Array.isArray(db.tasks)) db.tasks = [...SEED_DB.tasks];
+  if (!db.npoStats || typeof db.npoStats !== 'object') db.npoStats = { ...SEED_DB.npoStats };
+  for (const key of Object.keys(SEED_DB.npoStats)) {
+    if (typeof db.npoStats[key] !== 'number') db.npoStats[key] = SEED_DB.npoStats[key];
+  }
+  if (!db.chatStore || typeof db.chatStore !== 'object') db.chatStore = {};
+  if (!Array.isArray(db.autoReplies) || db.autoReplies.length === 0) db.autoReplies = [...SEED_DB.autoReplies];
+  if (!db.userVerifications || typeof db.userVerifications !== 'object') {
+    db.userVerifications = { defaultUser: { ...SEED_DB.userVerifications.defaultUser } };
+  }
+  if (!db.userVerifications.defaultUser || typeof db.userVerifications.defaultUser !== 'object') {
+    db.userVerifications.defaultUser = { ...SEED_DB.userVerifications.defaultUser };
+  }
+  return db;
+}
+
 // --- Helper: Read / Write JSON Database ---
 function loadDB() {
   if (inMemoryDB) return inMemoryDB;
   try {
     if (fs.existsSync(DB_FILE)) {
-      const raw = fs.readFileSync(DB_FILE, 'utf-8');
-      inMemoryDB = JSON.parse(raw);
+      // Strip a UTF-8 BOM if present (files saved by Windows editors / PowerShell
+      // often carry one, and JSON.parse rejects it, silently discarding all data).
+      const raw = fs.readFileSync(DB_FILE, 'utf-8').replace(/^\uFEFF/, '');
+      inMemoryDB = normalizeDB(JSON.parse(raw));
       return inMemoryDB;
     }
   } catch (err) {
-    console.error("⚠️ Error loading db.json:", err.message);
+    console.error("⚠️ Error loading db.json (falling back to seed data):", err.message);
   }
-  inMemoryDB = {
-    tasks: [],
-    npoStats: { totalMealsServed: 1280, totalDonationYen: 640000, supportedCafeterias: 14, registeredSupporters: 340 },
-    chatStore: {},
-    userVerifications: { defaultUser: { requester: true, helper: true } }
-  };
+  inMemoryDB = normalizeDB(JSON.parse(JSON.stringify(SEED_DB)));
   return inMemoryDB;
 }
 
@@ -39,7 +71,10 @@ function saveDB(data) {
   try {
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
   } catch (err) {
-    // Safe fallback for Vercel serverless read-only filesystem
+    // 永続化の制約: Vercel のサーバーレス環境ではファイルシステムが読み取り専用で、
+    // 書き込んでも次回の実行時には残りません。その場合データはこのプロセスの
+    // メモリ内にのみ保持されます（プロセスが再起動するとシード/db.json に戻ります）。
+    // 複数人でデータを共有・永続化するには外部データベースが必要です。
   }
 }
 
@@ -112,7 +147,7 @@ const server = http.createServer((req, res) => {
       filtered = filtered.filter(t => t.category === category);
     }
     if (ward && ward !== 'all') {
-      filtered = filtered.filter(t => t.fuzzyLocation.includes(ward) || t.ward === ward);
+      filtered = filtered.filter(t => (t.fuzzyLocation && t.fuzzyLocation.includes(ward)) || t.ward === ward);
     }
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=UTF-8' });
@@ -127,6 +162,11 @@ const server = http.createServer((req, res) => {
     req.on('end', () => {
       try {
         const data = JSON.parse(body);
+        if (!data.title || !String(data.title).trim() || !data.description || !String(data.description).trim()) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "title and description are required" }));
+          return;
+        }
         const db = loadDB();
         const newTask = {
           id: "task-" + Date.now(),
@@ -162,16 +202,18 @@ const server = http.createServer((req, res) => {
     const taskId = parts[3];
     const db = loadDB();
 
-    db.tasks = (db.tasks || []).filter(t => t.id !== taskId);
-    if (!db.npoStats) {
-      db.npoStats = { totalMealsServed: 0, totalDonationYen: 0, supportedCafeterias: 0, registeredSupporters: 0 };
+    // Only count the donation when the task actually existed, so repeated or
+    // unknown completions never inflate the counters (idempotent).
+    const existed = (db.tasks || []).some(t => t.id === taskId);
+    if (existed) {
+      db.tasks = db.tasks.filter(t => t.id !== taskId);
+      db.npoStats.totalMealsServed += 1;
+      db.npoStats.totalDonationYen += 500;
+      saveDB(db);
     }
-    db.npoStats.totalMealsServed += 1;
-    db.npoStats.totalDonationYen += 500;
-    saveDB(db);
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=UTF-8' });
-    res.end(JSON.stringify({ success: true, npoStats: db.npoStats }));
+    res.end(JSON.stringify({ success: true, completed: existed, npoStats: db.npoStats }));
     return;
   }
 
@@ -203,13 +245,16 @@ const server = http.createServer((req, res) => {
         const userMsg = { sender: data.sender || "me", text: data.text, time: timeStr };
         db.chatStore[taskId].push(userMsg);
 
-        // Auto mock response if sender is 'me' and autoReply flag is set
+        // Auto reply if sender is 'me' and autoReply flag is set.
+        // 制約: この自動返信は応答後に setTimeout で保存されます。Vercel のような
+        // サーバーレス環境ではレスポンス後にプロセスが凍結・終了するため、
+        // 自動返信が保存されない場合があります（ローカル実行では動作します）。
         if (data.sender !== 'them' && data.autoReply !== false) {
           setTimeout(() => {
             const dbAsync = loadDB();
             dbAsync.chatStore = dbAsync.chatStore || {};
             if (!dbAsync.chatStore[taskId]) dbAsync.chatStore[taskId] = [];
-            const replies = [
+            const replies = (dbAsync.autoReplies && dbAsync.autoReplies.length > 0) ? dbAsync.autoReplies : [
               "ご連絡ありがとうございます！お待ちしておりますね。",
               "ありがとうございます！助かります。どうぞ気をつけてお越しください。",
               "承知いたしました！お会いできるのを楽しみにしております。"
@@ -240,7 +285,7 @@ const server = http.createServer((req, res) => {
   if (pathname === '/api/user/verify' && req.method === 'GET') {
     const db = loadDB();
     res.writeHead(200, { 'Content-Type': 'application/json; charset=UTF-8' });
-    res.end(JSON.stringify(db.userVerifications || { defaultUser: { requester: true, helper: true } }));
+    res.end(JSON.stringify(db.userVerifications));
     return;
   }
 
@@ -270,7 +315,18 @@ const server = http.createServer((req, res) => {
   }
 
   // === STATIC FILE SERVING ===
+  // Server-internal files must never be served to browsers
+  // (db.json contains all stored data; local_server.js is the server source).
+  const BLOCKED_STATIC_FILES = new Set([
+    'db.json', 'local_server.js', 'vercel.json', '.vercelignore',
+    'start_server.bat', 'start_server.ps1', 'package.json', 'package-lock.json'
+  ]);
   let safePath = pathname === '/' ? 'index.html' : pathname;
+  if (BLOCKED_STATIC_FILES.has(path.basename(safePath))) {
+    res.writeHead(404, { 'Content-Type': 'text/html; charset=UTF-8' });
+    res.end('<h1>404 Not Found</h1>');
+    return;
+  }
   let filePath = path.join(__dirname, path.normalize(safePath).replace(/^(\.\.[\/\\])+/, ''));
   const ext = path.extname(filePath).toLowerCase();
   const contentType = MIME_TYPES[ext] || 'text/plain; charset=UTF-8';
