@@ -1,0 +1,1 @@
+{"dependencies":{"@vercel/blob":"^2.9.0"},"description":"おせっ会 浜松 バックエンドAPI＆Webサーバー","devDependencies":{"jsdom":"^31.0.0"},"main":"local_server.js","name":"osekkai-hamamatsu","private":true,"scripts":{"start":"node local_server.js","test":"node tests/run_tests.js"},"version":"1.0.0"}

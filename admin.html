@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>運営者確認画面 | おせっ会 浜松</title>
+<style>
+  :root {
+    --primary: #059669;
+    --primary-hover: #047857;
+    --primary-light: #d1fae5;
+    --danger: #dc2626;
+    --danger-light: #fef2f2;
+    --warn: #d97706;
+    --warn-light: #fffbeb;
+    --border: #e2e8f0;
+    --text-main: #1e293b;
+    --text-muted: #64748b;
+    --bg-main: #f8fafc;
+    --radius-md: 12px;
+    --radius-sm: 8px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+    background: var(--bg-main);
+    color: var(--text-main);
+    margin: 0;
+    padding: 1rem;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; }
+  h1 { font-size: 1.3rem; margin: 0.5rem 0 0.25rem; }
+  .lead { color: var(--text-muted); font-size: 0.9rem; line-height: 1.6; margin-bottom: 1.25rem; }
+  .card {
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 1rem;
+    margin-bottom: 1rem;
+  }
+  .login-box { max-width: 440px; margin: 3rem auto; text-align: center; }
+  .login-box input {
+    width: 100%;
+    padding: 0.7rem;
+    font-size: 1rem;
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius-sm);
+    margin: 0.75rem 0;
+  }
+  .btn {
+    display: inline-block;
+    border: none;
+    border-radius: var(--radius-sm);
+    padding: 0.65rem 1.2rem;
+    font-size: 0.95rem;
+    font-weight: 800;
+    cursor: pointer;
+    color: white;
+    background: var(--primary);
+  }
+  .btn:hover { background: var(--primary-hover); }
+  .btn-danger { background: var(--danger); }
+  .btn-ghost { background: #e2e8f0; color: var(--text-main); }
+  .btn:disabled { opacity: 0.5; cursor: default; }
+  .filters { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .filters button {
+    border: 1.5px solid var(--border);
+    background: white;
+    border-radius: 999px;
+    padding: 0.35rem 0.9rem;
+    font-weight: 700;
+    cursor: pointer;
+    color: var(--text-main);
+  }
+  .filters button.active { background: var(--primary-light); border-color: var(--primary); color: var(--primary-hover); }
+  .req { display: flex; gap: 1rem; flex-wrap: wrap; }
+  .req img.photo {
+    width: 260px;
+    max-width: 100%;
+    border-radius: var(--radius-sm);
+    border: 1.5px solid var(--border);
+    object-fit: contain;
+    background: #f1f5f9;
+  }
+  .req .meta { flex: 1; min-width: 220px; font-size: 0.9rem; line-height: 1.7; }
+  .req .meta .name { font-size: 1.05rem; font-weight: 800; }
+  .req .meta .sub { color: var(--text-muted); font-size: 0.8rem; word-break: break-all; }
+  .status-badge {
+    display: inline-block;
+    padding: 0.15rem 0.7rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 800;
+  }
+  .status-pending { background: var(--warn-light); color: var(--warn); border: 1px solid var(--warn); }
+  .status-approved { background: var(--primary-light); color: var(--primary-hover); border: 1px solid var(--primary); }
+  .status-rejected { background: var(--danger-light); color: var(--danger); border: 1px solid var(--danger); }
+  .reason-input {
+    width: 100%;
+    padding: 0.55rem;
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 0.9rem;
+    margin: 0.5rem 0;
+  }
+  .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.5rem; }
+  .error-box {
+    display: none;
+    background: var(--danger-light);
+    border: 1.5px solid #fca5a5;
+    color: #991b1b;
+    border-radius: var(--radius-sm);
+    padding: 0.75rem;
+    margin-bottom: 1rem;
+    font-size: 0.9rem;
+    line-height: 1.5;
+  }
+  .empty { text-align: center; color: var(--text-muted); padding: 2.5rem 1rem; }
+  .topbar { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ログイン（管理パスコード入力） -->
+  <div id="loginView" class="card login-box">
+    <div style="font-size: 2.2rem;">🛡️</div>
+    <h1>運営者確認画面</h1>
+    <p class="lead">本人確認の写真申請を確認するには、管理パスコードを入力してください。</p>
+    <input type="password" id="passcodeInput" placeholder="管理パスコード" autocomplete="off">
+    <div id="loginError" class="error-box"></div>
+    <button class="btn" id="btnLogin" style="width: 100%;">ログインして申請一覧を開く</button>
+    <p class="lead" style="margin-top: 1rem; font-size: 0.8rem;">
+      ※ このページ自体は誰でも開けますが、申請一覧（写真を含む）はサーバー側でパスコード照合に成功した場合のみ返されます。
+    </p>
+  </div>
+
+  <!-- 申請一覧 -->
+  <div id="listView" style="display: none;">
+    <div class="topbar">
+      <h1>🪪 本人確認の申請一覧</h1>
+      <div>
+        <button class="btn btn-ghost" id="btnReload">再読み込み</button>
+        <button class="btn btn-ghost" id="btnLogout">ログアウト</button>
+      </div>
+    </div>
+    <p class="lead">
+      送られてきた写真が、マイナンバーカード等の身分証明書の写真かどうかを目視で確認し、「承認」または「差し戻し」をしてください。差し戻す場合は、利用者に表示される理由を入力してください。
+    </p>
+    <div id="listError" class="error-box"></div>
+    <div class="filters" id="statusFilters">
+      <button data-status="" class="active">すべて</button>
+      <button data-status="pending">確認待ち</button>
+      <button data-status="approved">承認済み</button>
+      <button data-status="rejected">差し戻し</button>
+    </div>
+    <div id="requestList"></div>
+  </div>
+
+</div>
+
+<script>
+// app.js と同じ方針: まず相対API、ダメならクラウドAPIへ
+const BACKEND_CLOUD_API = "https://osekkai-hamamatsu.vercel.app";
+const PASSCODE_KEY = "osekkai_admin_passcode";
+let currentFilter = "";
+
+async function adminFetch(endpoint, passcode, options = {}) {
+  const opts = { ...options, headers: { ...(options.headers || {}), "X-Admin-Passcode": passcode } };
+  try {
+    const res = await fetch(endpoint, opts);
+    if (res && (res.ok || res.status === 403 || res.status === 400 || res.status === 404)) return res;
+  } catch (e) {}
+  try {
+    const res = await fetch(BACKEND_CLOUD_API + endpoint, opts);
+    if (res) return res;
+  } catch (e) {}
+  return null;
+}
+
+function getPasscode() {
+  try { return sessionStorage.getItem(PASSCODE_KEY) || ""; } catch (e) { return ""; }
+}
+
+function escapeHTML(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function formatDate(iso) {
+  if (!iso) return '';
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString('ja-JP', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  } catch (e) { return iso; }
+}
+
+function docTypeName(docType) {
+  return docType === 'license' ? '🚗 運転免許証' : '🪪 マイナンバーカード';
+}
+
+function statusBadge(status) {
+  if (status === 'approved') return '<span class="status-badge status-approved">承認済み</span>';
+  if (status === 'rejected') return '<span class="status-badge status-rejected">差し戻し</span>';
+  return '<span class="status-badge status-pending">確認待ち</span>';
+}
+
+async function loadRequests() {
+  const passcode = getPasscode();
+  const listEl = document.getElementById("requestList");
+  const errEl = document.getElementById("listError");
+  errEl.style.display = "none";
+  listEl.innerHTML = '<div class="empty">読み込み中...</div>';
+
+  const endpoint = "/api/admin/verify-requests" + (currentFilter ? ("?status=" + encodeURIComponent(currentFilter)) : "");
+  const res = await adminFetch(endpoint, passcode);
+  if (!res) {
+    listEl.innerHTML = '<div class="empty">サーバーに接続できませんでした。</div>';
+    return;
+  }
+  if (res.status === 403) {
+    errEl.textContent = "管理パスコードが違います。ログアウトして、もう一度入力してください。";
+    errEl.style.display = "block";
+    listEl.innerHTML = '';
+    return;
+  }
+  const list = await res.json();
+  if (!Array.isArray(list) || list.length === 0) {
+    listEl.innerHTML = '<div class="empty">申請はまだありません。</div>';
+    return;
+  }
+
+  listEl.innerHTML = "";
+  list.forEach(req => {
+    const card = document.createElement("div");
+    card.className = "card";
+    const reviewed = req.reviewedAt ? `<div class="sub">確認日時: ${formatDate(req.reviewedAt)}</div>` : "";
+    const reason = req.reason ? `<div>差し戻し理由: ${escapeHTML(req.reason)}</div>` : "";
+    const reviewControls = req.status === 'pending' ? `
+      <input type="text" class="reason-input" id="reason-${req.id}" placeholder="差し戻しの理由（例: 写真がぼやけて文字が読めません）">
+      <div class="actions">
+        <button class="btn" data-action="approve" data-id="${req.id}">✅ 承認する</button>
+        <button class="btn btn-danger" data-action="reject" data-id="${req.id}">↩️ 差し戻す</button>
+      </div>` : "";
+    card.innerHTML = `
+      <div class="req">
+        <img class="photo" src="${escapeHTML(req.photoDataUrl || '')}" alt="提出された本人確認写真">
+        <div class="meta">
+          <div class="name">${escapeHTML(req.displayName || '（名前なし）')} 様</div>
+          <div>${docTypeName(req.docType)} ／ ${statusBadge(req.status)}</div>
+          <div>申請日時: ${formatDate(req.createdAt)}</div>
+          ${reason}
+          ${reviewed}
+          <div class="sub">利用者キー: ${escapeHTML(req.userKey || '')}</div>
+          <div class="sub">申請ID: ${escapeHTML(req.id || '')}</div>
+          ${reviewControls}
+        </div>
+      </div>`;
+    listEl.appendChild(card);
+  });
+
+  listEl.querySelectorAll("button[data-action]").forEach(btn => {
+    btn.addEventListener("click", () => reviewRequest(btn.getAttribute("data-id"), btn.getAttribute("data-action")));
+  });
+}
+
+async function reviewRequest(id, action) {
+  const passcode = getPasscode();
+  const errEl = document.getElementById("listError");
+  errEl.style.display = "none";
+  let reason = "";
+  if (action === 'reject') {
+    const input = document.getElementById("reason-" + id);
+    reason = input ? input.value.trim() : "";
+    if (!reason) {
+      errEl.textContent = "差し戻す場合は理由を入力してください（利用者の画面に表示されます）。";
+      errEl.style.display = "block";
+      return;
+    }
+  }
+  const res = await adminFetch(`/api/admin/verify-requests/${encodeURIComponent(id)}/review`, passcode, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, reason })
+  });
+  if (!res || !res.ok) {
+    errEl.textContent = "処理に失敗しました。通信状態をご確認のうえ、もう一度お試しください。";
+    errEl.style.display = "block";
+    return;
+  }
+  loadRequests();
+}
+
+function showList() {
+  document.getElementById("loginView").style.display = "none";
+  document.getElementById("listView").style.display = "block";
+  loadRequests();
+}
+
+document.getElementById("btnLogin").addEventListener("click", async () => {
+  const input = document.getElementById("passcodeInput");
+  const errEl = document.getElementById("loginError");
+  errEl.style.display = "none";
+  const passcode = input.value.trim();
+  if (!passcode) {
+    errEl.textContent = "管理パスコードを入力してください。";
+    errEl.style.display = "block";
+    return;
+  }
+  // パスコードが正しいか、一覧取得で照合してから一覧画面へ進む
+  const res = await adminFetch("/api/admin/verify-requests", passcode);
+  if (!res) {
+    errEl.textContent = "サーバーに接続できませんでした。通信状態をご確認ください。";
+    errEl.style.display = "block";
+    return;
+  }
+  if (res.status === 403) {
+    errEl.textContent = "管理パスコードが違います。";
+    errEl.style.display = "block";
+    return;
+  }
+  try { sessionStorage.setItem(PASSCODE_KEY, passcode); } catch (e) {}
+  showList();
+});
+
+document.getElementById("passcodeInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("btnLogin").click();
+});
+
+document.getElementById("btnReload").addEventListener("click", loadRequests);
+document.getElementById("btnLogout").addEventListener("click", () => {
+  try { sessionStorage.removeItem(PASSCODE_KEY); } catch (e) {}
+  location.reload();
+});
+document.getElementById("statusFilters").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-status]");
+  if (!btn) return;
+  document.querySelectorAll("#statusFilters button").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  currentFilter = btn.getAttribute("data-status") || "";
+  loadRequests();
+});
+
+// 既にパスコード入力済み（同一タブ内）なら一覧を直接開く
+if (getPasscode()) showList();
+</script>
+</body>
+</html>

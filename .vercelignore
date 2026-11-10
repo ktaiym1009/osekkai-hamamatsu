@@ -2,3 +2,7 @@ server.js
 start_server.bat
 start_server.ps1
 db.json
+node_modules
+tests
+REPORT.md
+preview-osekkai-fixed.html
