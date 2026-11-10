@@ -101,7 +101,7 @@ async function fetchVerifyPhotoAsDataUrl(record) {
   const blob = loadBlobClient();
   if (!blob || !record.photoBlobPathname) return '';
   try {
-    const got = await blob.get(record.photoBlobPathname, { token: process.env.BLOB_READ_WRITE_TOKEN });
+    const got = await blob.get(record.photoBlobPathname, { access: 'private', token: process.env.BLOB_READ_WRITE_TOKEN });
     if (!got || !got.stream) return '';
     const buf = Buffer.from(await new Response(got.stream).arrayBuffer());
     let mime = '';
@@ -147,7 +147,7 @@ function hydrateVerifyRequestsFromBlob(db) {
         for (const r of (db.verificationRequests || [])) byId.set(r.id, r);
         for (const pathname of metas) {
           try {
-            const got = await blob.get(pathname, { token: process.env.BLOB_READ_WRITE_TOKEN });
+            const got = await blob.get(pathname, { access: 'private', token: process.env.BLOB_READ_WRITE_TOKEN });
             if (!got || !got.stream) continue;
             const text = await new Response(got.stream).text();
             const meta = JSON.parse(text);
