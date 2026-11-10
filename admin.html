@@ -167,9 +167,18 @@ let currentFilter = "";
 
 async function adminFetch(endpoint, passcode, options = {}) {
   const opts = { ...options, headers: { ...(options.headers || {}), "X-Admin-Passcode": passcode } };
+  // 相対URLの応答が本物のAPI（JSON）のときだけ採用する。GitHub Pages 上では
+  // 相対 /api/... が Pages 自身のHTML製404を返すため、それを採用すると
+  // クラウドAPIへ切り替わらず一覧が読み込めなくなる（第5弾で修正）。
+  const isApiJson = (res) => {
+    try {
+      const ct = res && res.headers && typeof res.headers.get === "function" ? res.headers.get("content-type") : null;
+      return !!ct && ct.indexOf("json") !== -1;
+    } catch (e) { return false; }
+  };
   try {
     const res = await fetch(endpoint, opts);
-    if (res && (res.ok || res.status === 403 || res.status === 400 || res.status === 404)) return res;
+    if (res && isApiJson(res)) return res;
   } catch (e) {}
   try {
     const res = await fetch(BACKEND_CLOUD_API + endpoint, opts);
