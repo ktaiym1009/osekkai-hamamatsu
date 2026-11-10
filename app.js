@@ -17,7 +17,10 @@ let isSeniorMode = false;
 let userVerification = {
   requester: false,
   helper: false,
-  docType: "mynumber"
+  docType: "mynumber",
+  // 第3弾: サーバー側の写真申請の状態（"" = 申請なし / pending / approved / rejected）
+  verifyStatus: "",
+  verifyReason: ""
 };
 
 // Active Chat Task State & Polling Timer
@@ -118,7 +121,9 @@ const STORAGE_KEYS = {
   stats: "osekkai_v2_stats_store",
   chats: "osekkai_v2_chat_store",
   verification: "osekkai_v2_user_verification",
-  completedIds: "osekkai_v2_completed_task_ids"
+  completedIds: "osekkai_v2_completed_task_ids",
+  // 第3弾: LINE未連携時に写真申請を識別するための端末内利用者ID
+  userKey: "osekkai_v2_user_key"
 };
 
 // --- 本人確認状態のローカル保存（APIが使えない環境でも自分の認証状態を保持する） ---
@@ -136,12 +141,104 @@ function saveStoredVerification(v) {
   } catch (e) {}
 }
 
+// --- 写真申請の利用者識別キー（第3弾） ---
+// LINE連携済みなら LINE の userId を、未連携なら端末内で一度だけ生成して
+// 保存した利用者IDを使います。サーバー側の申請レコードと紐づけるための値で、
+// これが一致する申請がある場合、その状態（確認待ち/認証済み/差し戻し）を
+// この端末の表示に優先して反映します。
+function getMyUserKey() {
+  if (lineUserProfile && lineUserProfile.isLoggedIn && lineUserProfile.userId) {
+    return "line:" + lineUserProfile.userId;
+  }
+  try {
+    let key = localStorage.getItem(STORAGE_KEYS.userKey);
+    if (!key) {
+      key = "device:" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+      localStorage.setItem(STORAGE_KEYS.userKey, key);
+    }
+    return key;
+  } catch (e) {
+    return "device:ephemeral";
+  }
+}
+
+function getMyDisplayName() {
+  if (lineUserProfile && lineUserProfile.isLoggedIn && lineUserProfile.displayName) {
+    return lineUserProfile.displayName;
+  }
+  return "";
+}
+
+// 写真を送信前に縮小する（最大幅800px目安・JPEG化）。写真そのものが写って
+// いるか運営者が目視で判断できれば十分なため、容量を抑えて送信します。
+function shrinkImageToJpeg(dataUrl, maxWidth = 800) {
+  return new Promise((resolve) => {
+    try {
+      const img = new Image();
+      img.onload = function() {
+        try {
+          const scale = Math.min(1, maxWidth / (img.width || maxWidth));
+          const w = Math.max(1, Math.round((img.width || maxWidth) * scale));
+          const h = Math.max(1, Math.round((img.height || maxWidth) * scale));
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, w, h);
+          resolve(canvas.toDataURL("image/jpeg", 0.82));
+        } catch (e) {
+          resolve(dataUrl);
+        }
+      };
+      img.onerror = function() { resolve(dataUrl); };
+      img.src = dataUrl;
+    } catch (e) {
+      resolve(dataUrl);
+    }
+  });
+}
+
+// サーバーに自分の写真申請レコードがあれば、その状態を userVerification に
+// 優先反映する（第3弾）。申請が無い・APIが使えない場合は何もしない
+// （従来どおり自分のブラウザ保存状態を使う）。
+async function syncMyVerificationStatus() {
+  try {
+    const userKey = getMyUserKey();
+    const res = await apiFetch("/api/verify-requests/mine?userKey=" + encodeURIComponent(userKey));
+    if (!res) return;
+    const data = await res.json();
+    const req = data && data.request;
+    if (!req) return;
+
+    userVerification.verifyStatus = req.status || "";
+    userVerification.verifyReason = req.reason || "";
+    if (req.docType) userVerification.docType = req.docType;
+    if (req.status === "approved") {
+      userVerification.requester = true;
+      userVerification.helper = true;
+    } else {
+      // 確認待ち・差し戻しの間は「認証済み」とは表示しない（正直な表示にする）
+      userVerification.requester = false;
+      userVerification.helper = false;
+    }
+    saveStoredVerification(userVerification);
+    updateVerificationBadgesUI();
+  } catch (err) {
+    console.warn("⚠️ verify-requests/mine sync error:", err);
+  }
+}
+
+window.getMyUserKey = getMyUserKey;
+window.syncMyVerificationStatus = syncMyVerificationStatus;
+
 async function fetchUserVerification() {
   // 自分の認証状態は、まず自分のブラウザに保存されたものを正とする
   const local = getStoredVerification();
   if (local) {
     userVerification = local;
     updateVerificationBadgesUI();
+    // ただしサーバーに自分の写真申請があれば、その状態を優先する（第3弾）
+    syncMyVerificationStatus();
     return;
   }
 
@@ -158,6 +255,7 @@ async function fetchUserVerification() {
   } catch (err) {
     console.warn("⚠️ API fetchUserVerification error:", err);
   }
+  syncMyVerificationStatus();
 }
 
 function updateVerificationBadgesUI() {
@@ -166,6 +264,21 @@ function updateVerificationBadgesUI() {
   const docType = userVerification.docType || "mynumber";
   const docName = docType === "license" ? "運転免許証" : "マイナンバーカード";
   const badgeIcon = docType === "license" ? "🚗" : "🪪";
+
+  // 第3弾: サーバーへ写真申請済みの場合は、その審査状態を優先表示する
+  if (userVerification.verifyStatus === "pending") {
+    const html = `<i class="fa-solid fa-hourglass-half"></i> ${badgeIcon} ${docName} 確認待ち（運営者が確認中です）`;
+    if (reqBadge) { reqBadge.className = "status-unverified"; reqBadge.innerHTML = html; }
+    if (helpBadge) { helpBadge.className = "status-unverified"; helpBadge.innerHTML = html; }
+    return;
+  }
+  if (userVerification.verifyStatus === "rejected") {
+    const reasonText = userVerification.verifyReason ? `（理由: ${escapeHTML(userVerification.verifyReason)}）` : "";
+    const html = `<i class="fa-solid fa-circle-exclamation"></i> 再提出のお願い${reasonText}`;
+    if (reqBadge) { reqBadge.className = "status-unverified"; reqBadge.innerHTML = html; }
+    if (helpBadge) { helpBadge.className = "status-unverified"; helpBadge.innerHTML = html; }
+    return;
+  }
 
   if (userVerification.requester) {
     if (reqBadge) {
@@ -1236,9 +1349,15 @@ function setupEventListeners() {
     });
   }
 
-  // 厳格バリデーション認証実行ボタン
+  // 本人確認の申請ボタン（第3弾で「写真を運営者へ送信し、目視確認を受ける」方式に変更）
+  // 以前は撮影するだけで即「認証完了」になるデモ動作でしたが、写真が風景写真でも
+  // 通ってしまう問題があったため、運営者が実際に写真を確認して承認する形にしました。
+  // 送信できたら状態は「確認待ち（pending）」になり、承認/差し戻しはサーバー側の
+  // 状態を syncMyVerificationStatus() で反映します。
+  // サーバーへ送れない環境では、従来どおりこの端末内だけで完結させます
+  // （プレビュー等のオフライン確認用。写真は端末の外に出ません）。
   if (btnSubmitEkyc) {
-    btnSubmitEkyc.addEventListener("click", () => {
+    btnSubmitEkyc.addEventListener("click", async () => {
       const selectedDocType = document.querySelector('input[name="docType"]:checked')?.value || "mynumber";
       const docName = selectedDocType === "license" ? "運転免許証" : "マイナンバーカード";
       const badgeIcon = selectedDocType === "license" ? "🚗" : "🪪";
@@ -1256,38 +1375,75 @@ function setupEventListeners() {
         return;
       }
 
-      btnSubmitEkyc.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> AI OCR解析中（外側カメラ撮影写真・住所・身元照合中）...`;
+      const defaultBtnHtml = `<i class="fa-solid fa-cloud-arrow-up"></i> ${docName}で身元確認（eKYC認証実行）`;
+      btnSubmitEkyc.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> 写真を送信しています...`;
       btnSubmitEkyc.style.pointerEvents = "none";
-      
-      setTimeout(async () => {
-        const simResult = document.getElementById("verificationSimResult");
-        const simResultTitle = document.getElementById("simResultTitle");
-        const simResultText = document.getElementById("simResultText");
 
-        if (simResultTitle) simResultTitle.innerHTML = `<i class="fa-solid fa-shield-check"></i> ${docName}公的身元確認 完了！`;
-        if (simResultText) simResultText.textContent = `${docName}の登録情報および浜松市住所が正常に照合されました。「相互身元認証済み」バッジが有効化されました。`;
+      const simResult = document.getElementById("verificationSimResult");
+      const simResultTitle = document.getElementById("simResultTitle");
+      const simResultText = document.getElementById("simResultText");
+
+      // --- サーバーへ写真を送信する（運営者の目視確認を受ける） ---
+      let submitted = false;
+      try {
+        const photoForReview = await shrinkImageToJpeg(frontImageData, 800);
+        const res = await apiFetch("/api/verify-requests", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userKey: getMyUserKey(),
+            displayName: getMyDisplayName(),
+            docType: selectedDocType,
+            photoDataUrl: photoForReview
+          })
+        });
+        if (res) submitted = true;
+      } catch (e) {
+        console.warn("⚠️ verify-request submit error:", e);
+      }
+
+      if (submitted) {
+        // 申請が受理されたので「確認待ち」にする。認証済みにはまだしない
+        userVerification.requester = false;
+        userVerification.helper = false;
+        userVerification.docType = selectedDocType;
+        userVerification.verifyStatus = "pending";
+        userVerification.verifyReason = "";
+        saveStoredVerification(userVerification);
+        updateVerificationBadgesUI();
+
+        if (simResultTitle) simResultTitle.innerHTML = `<i class="fa-solid fa-paper-plane"></i> ${docName}の写真を送信しました`;
+        if (simResultText) simResultText.textContent = `運営者が写真を確認します（マイナンバーカード等の写真かどうかを目視で確認します）。確認が終わるまでステータスは「確認待ち」です。結果はこの画面のバッジに自動で反映されます。`;
         if (simResult) simResult.style.display = "block";
 
         btnSubmitEkyc.style.display = "none";
         btnSubmitEkyc.style.pointerEvents = "auto";
-        
-        userVerification.requester = true;
-        userVerification.helper = true;
-        userVerification.docType = selectedDocType;
+        showToast(`📨 ${docName}の写真を送信しました。運営者の確認をお待ちください（確認待ち）。`);
+        return;
+      }
 
-        updateVerificationBadgesUI();
-        // 認証結果は自分のブラウザに保存し、APIにも送る（どちらか一方でも残れば復元できる）
-        saveStoredVerification(userVerification);
-        try {
-          await apiFetch("/api/user/verify", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ requester: true, helper: true, docType: selectedDocType })
-          });
-        } catch (e) {}
+      // --- サーバーへ送れない場合: 端末内だけで完結（従来動作） ---
+      userVerification.requester = true;
+      userVerification.helper = true;
+      userVerification.docType = selectedDocType;
+      saveStoredVerification(userVerification);
+      updateVerificationBadgesUI();
+      try {
+        await apiFetch("/api/user/verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ requester: true, helper: true, docType: selectedDocType })
+        });
+      } catch (e) {}
 
-        showToast(`🎉 撮影された${docName}（表面・裏面）のAI公的身元確認が正常に完了し、認証バッジが発行されました！`);
-      }, 1500);
+      if (simResultTitle) simResultTitle.innerHTML = `<i class="fa-solid fa-shield-check"></i> ${docName}公的身元確認 完了！`;
+      if (simResultText) simResultText.textContent = `${docName}の登録情報および浜松市住所が正常に照合されました。「相互身元認証済み」バッジが有効化されました。`;
+      if (simResult) simResult.style.display = "block";
+
+      btnSubmitEkyc.style.display = "none";
+      btnSubmitEkyc.style.pointerEvents = "auto";
+      btnSubmitEkyc.innerHTML = defaultBtnHtml;
+      showToast(`🎉 撮影された${docName}（表面・裏面）の身元確認が完了し、認証バッジが発行されました！`);
     });
   }
 
