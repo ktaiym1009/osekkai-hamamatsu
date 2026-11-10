@@ -46,8 +46,15 @@ function loadBlobClient() {
   try {
     // 通常は npm パッケージ '@vercel/blob' を読みます。テストでは
     // OSEKKAI_BLOB_MODULE_PATH にモックモジュールのパスを指定できます。
-    const modulePath = process.env.OSEKKAI_BLOB_MODULE_PATH || '@vercel/blob';
-    blobClientCache = require(modulePath);
+    // ★ 本番（Vercel）では、デプロイ時の依存関係トレースが静的に読み取れる
+    // 「文字列リテラルの require」でないとパッケージが同梱されず、実行時に
+    // "Cannot find module '@vercel/blob'" になります（2026-11-11 に実発生）。
+    // そのため本番パスは必ずリテラルで require してください。
+    if (process.env.OSEKKAI_BLOB_MODULE_PATH) {
+      blobClientCache = require(process.env.OSEKKAI_BLOB_MODULE_PATH);
+    } else {
+      blobClientCache = require('@vercel/blob');
+    }
   } catch (err) {
     console.error('⚠️ @vercel/blob を読み込めませんでした。写真は従来方式（db.json）で保存します:', err.message);
     blobClientCache = null;
