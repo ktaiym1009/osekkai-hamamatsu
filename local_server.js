@@ -63,6 +63,69 @@ function loadBlobClient() {
 }
 function blobStorageEnabled() { return !!loadBlobClient(); }
 
+// --- 共有データの Blob 復元（hydrate）の再読み込み制御（第9弾） ---
+// 第5〜8弾の hydrate は「プロセス（= Vercel のサーバーインスタンス）ごとに
+// 初回だけ Blob を読む」設計でした。そのため、あるインスタンスが読み込み
+// 済みの状態で別インスタンスが新しいレコードを Blob へ書いても、既存
+// インスタンスの一覧には永遠に反映されませんでした（2026-11-11 の本番
+// 実機確認で、応答するインスタンスによって投稿一覧が食い違う問題として
+// 顕在化。本人確認・ワンコインでは書き込み頻度が低く目立ちませんでした）。
+// 第9弾では全ての hydrate に「TTL付き再読み込み」を導入します:
+//   - コレクションごとに最終読み込み時刻を保持し、TTL を過ぎていたら
+//     次回の呼び出しで list+get し直して取り込みます。
+//   - 同時に複数リクエストが来ても再読み込みは1回に重ねます
+//     （in-flight Promise の共有は維持します）。
+//   - 取り込みは従来どおり「メモリ側を種に、Blob 側を正として同IDを
+//     置き換えるマージ」なので、Blob の list にまだ現れていない自
+//     インスタンスの新規レコードが再読み込みで消えることはありません。
+//   - 読み込みに失敗した場合は最終読み込み時刻を更新しないため、次回の
+//     呼び出しで再試行されます。
+//   - options.force = true で TTL 内でも強制的に読み直します（完了API
+//     のように、最新の状態を前提に書き込む経路で使います）。
+// TTL は定数 HYDRATION_TTL_MS（既定15秒）。環境変数
+// OSEKKAI_HYDRATION_TTL_MS（ミリ秒）で変更でき、テストでは 0（毎回
+// 読み直す）や極小値を指定できます。他インスタンスの書き込みが一覧へ
+// 伝わるまでの遅延は、最大で「TTL + Blob の list 反映遅延」程度です。
+const HYDRATION_TTL_MS = (() => {
+  const raw = process.env.OSEKKAI_HYDRATION_TTL_MS;
+  if (raw === undefined || raw === '') return 15000;
+  const n = Number(raw);
+  return (Number.isFinite(n) && n >= 0) ? Math.floor(n) : 15000;
+})();
+
+// loadOnce(db, blob) は「1回分の list+get+マージ」を行い成否を boolean で
+// 返す関数。それを TTL 付き再読み込みで包んだ hydrate 関数を作ります。
+function createHydrationReloader(label, loadOnce) {
+  let inFlight = null;
+  let lastLoadedAt = 0;
+  let lastOk = false;
+  return function hydrate(db, options) {
+    const blob = loadBlobClient();
+    if (!blob) return Promise.resolve(false);
+    if (inFlight) return inFlight;
+    const force = !!(options && options.force);
+    if (!force && lastLoadedAt > 0 && (Date.now() - lastLoadedAt) < HYDRATION_TTL_MS) {
+      return Promise.resolve(lastOk);
+    }
+    inFlight = (async () => {
+      try {
+        const ok = await loadOnce(db, blob);
+        if (ok) {
+          lastLoadedAt = Date.now();
+          lastOk = true;
+        }
+        return ok;
+      } catch (err) {
+        console.error('⚠️ Blob からのデータ復元に失敗しました:', label, err.message);
+        return false;
+      } finally {
+        inFlight = null;
+      }
+    })();
+    return inFlight;
+  };
+}
+
 function verifyPhotoPathname(id, ext) { return VERIFY_BLOB_PREFIX + id + '/photo.' + ext; }
 function verifyMetaPathname(id) { return VERIFY_BLOB_PREFIX + id + '/meta.json'; }
 
@@ -127,56 +190,49 @@ async function fetchVerifyPhotoAsDataUrl(record) {
 
 // Blob 上の meta.json 群を読み、db.verificationRequests に取り込む
 // （Vercel のコールドスタートでメモリ/db.json が初期化されても、Blob に
-// 残っている申請を復元するため）。プロセス内で基本1回だけ実行し、
-// 失敗した場合は次回の呼び出しで再試行できるようにする。
-let verifyHydrationPromise = null;
-function hydrateVerifyRequestsFromBlob(db) {
-  const blob = loadBlobClient();
-  if (!blob) return Promise.resolve(false);
-  if (!verifyHydrationPromise) {
-    verifyHydrationPromise = (async () => {
-      try {
-        const metas = [];
-        let cursor = undefined;
-        do {
-          const listed = await blob.list({
-            prefix: VERIFY_BLOB_PREFIX,
-            limit: 1000,
-            cursor: cursor,
-            token: process.env.BLOB_READ_WRITE_TOKEN
-          });
-          for (const b of (listed.blobs || [])) {
-            if (b.pathname && b.pathname.endsWith('/meta.json')) metas.push(b.pathname);
-          }
-          cursor = listed.hasMore ? listed.cursor : undefined;
-        } while (cursor);
-        const byId = new Map();
-        for (const r of (db.verificationRequests || [])) byId.set(r.id, r);
-        for (const pathname of metas) {
-          try {
-            const got = await blob.get(pathname, { access: 'private', token: process.env.BLOB_READ_WRITE_TOKEN });
-            if (!got || !got.stream) continue;
-            const text = await new Response(got.stream).text();
-            const meta = JSON.parse(text);
-            if (meta && meta.id) {
-              // Blob 側を正として、同IDのメモリ側レコードを置き換える
-              byId.set(meta.id, { photoDataUrl: '', ...meta });
-            }
-          } catch (err) {
-            console.error('⚠️ Blob の申請メタデータ読み込みに失敗（読み飛ばします）:', pathname, err.message);
-          }
-        }
-        db.verificationRequests = [...byId.values()];
-        return true;
-      } catch (err) {
-        console.error('⚠️ Blob からの申請データ復元に失敗しました:', err.message);
-        verifyHydrationPromise = null; // 次回リクエストで再試行できるようにする
-        return false;
+// 残っている申請を復元するため）。読み込みのタイミングは第9弾の TTL
+// 付き再読み込み（createHydrationReloader）が制御し、別インスタンスが
+// 書いた申請も最大で TTL 程度の遅延で取り込まれます。
+async function loadVerifyRequestsOnceFromBlob(db, blob) {
+  try {
+    const metas = [];
+    let cursor = undefined;
+    do {
+      const listed = await blob.list({
+        prefix: VERIFY_BLOB_PREFIX,
+        limit: 1000,
+        cursor: cursor,
+        token: process.env.BLOB_READ_WRITE_TOKEN
+      });
+      for (const b of (listed.blobs || [])) {
+        if (b.pathname && b.pathname.endsWith('/meta.json')) metas.push(b.pathname);
       }
-    })();
+      cursor = listed.hasMore ? listed.cursor : undefined;
+    } while (cursor);
+    const byId = new Map();
+    for (const r of (db.verificationRequests || [])) byId.set(r.id, r);
+    for (const pathname of metas) {
+      try {
+        const got = await blob.get(pathname, { access: 'private', token: process.env.BLOB_READ_WRITE_TOKEN });
+        if (!got || !got.stream) continue;
+        const text = await new Response(got.stream).text();
+        const meta = JSON.parse(text);
+        if (meta && meta.id) {
+          // Blob 側を正として、同IDのメモリ側レコードを置き換える
+          byId.set(meta.id, { photoDataUrl: '', ...meta });
+        }
+      } catch (err) {
+        console.error('⚠️ Blob の申請メタデータ読み込みに失敗（読み飛ばします）:', pathname, err.message);
+      }
+    }
+    db.verificationRequests = [...byId.values()];
+    return true;
+  } catch (err) {
+    console.error('⚠️ Blob からの申請データ復元に失敗しました:', err.message);
+    return false;
   }
-  return verifyHydrationPromise;
 }
+const hydrateVerifyRequestsFromBlob = createHydrationReloader('verify-requests', loadVerifyRequestsOnceFromBlob);
 
 // --- ワンコイン寄付（第6弾）: 受け取り記録・寄付記録の Blob 永続化 ---
 // 本人確認（verify-requests）と同じ方式で、レコード1件ごとにメタデータJSONを
@@ -205,13 +261,13 @@ async function putRecordMetaToBlob(pathname, record) {
 
 // verify-requests の hydrateVerifyRequestsFromBlob と同じ考え方で、
 // 指定プレフィックス配下の meta.json 群を db の配列フィールドへ復元する。
-// Blob 側を正として同IDのメモリ側レコードを置き換えます。
-const collectionHydrationPromises = {};
-function hydrateCollectionFromBlob(db, field, prefix) {
-  const blob = loadBlobClient();
-  if (!blob) return Promise.resolve(false);
-  if (!collectionHydrationPromises[field]) {
-    collectionHydrationPromises[field] = (async () => {
+// Blob 側を正として同IDのメモリ側レコードを置き換えます。読み込みの
+// タイミングは第9弾の TTL 付き再読み込みが制御します（フィールドごとに
+// リローダーを保持し、prefix はフィールドに対して固定です）。
+const collectionHydrationReloaders = {};
+function hydrateCollectionFromBlob(db, field, prefix, options) {
+  if (!collectionHydrationReloaders[field]) {
+    collectionHydrationReloaders[field] = createHydrationReloader(field, async (db, blob) => {
       try {
         const pathnames = [];
         let cursor = undefined;
@@ -243,12 +299,11 @@ function hydrateCollectionFromBlob(db, field, prefix) {
         return true;
       } catch (err) {
         console.error('⚠️ Blob からのデータ復元に失敗しました:', field, err.message);
-        collectionHydrationPromises[field] = null; // 次回リクエストで再試行できるようにする
         return false;
       }
-    })();
+    });
   }
-  return collectionHydrationPromises[field];
+  return collectionHydrationReloaders[field](db, options);
 }
 
 // 金額（円）の検証: 1〜1,000,000 の整数のみ。不正なら null。
@@ -303,110 +358,96 @@ function taskSortKey(t) {
 
 // Blob 上の tasks/<id>.json 群を db.tasks に取り込む（コールドスタート対策）。
 // Blob 側を正として同IDのメモリ側レコードを置き換え、新しい順に並べ替える。
-let tasksHydrationPromise = null;
-function hydrateTasksFromBlob(db) {
-  const blob = loadBlobClient();
-  if (!blob) return Promise.resolve(false);
-  if (!tasksHydrationPromise) {
-    tasksHydrationPromise = (async () => {
-      try {
-        const pathnames = [];
-        let cursor = undefined;
-        do {
-          const listed = await blob.list({
-            prefix: TASK_BLOB_PREFIX,
-            limit: 1000,
-            cursor: cursor,
-            token: process.env.BLOB_READ_WRITE_TOKEN
-          });
-          for (const b of (listed.blobs || [])) {
-            if (b.pathname && b.pathname.endsWith('.json') && !b.pathname.endsWith('/meta.json')) pathnames.push(b.pathname);
-          }
-          cursor = listed.hasMore ? listed.cursor : undefined;
-        } while (cursor);
-        const byId = new Map();
-        for (const t of (db.tasks || [])) byId.set(t.id, t);
-        for (const pathname of pathnames) {
-          try {
-            const got = await blob.get(pathname, { access: 'private', token: process.env.BLOB_READ_WRITE_TOKEN });
-            if (!got || !got.stream) continue;
-            const rec = JSON.parse(await new Response(got.stream).text());
-            if (rec && rec.id) byId.set(rec.id, rec);
-          } catch (err) {
-            console.error('⚠️ Blob のタスク読み込みに失敗（読み飛ばします）:', pathname, err.message);
-          }
-        }
-        db.tasks = [...byId.values()].sort((a, b) => taskSortKey(b).localeCompare(taskSortKey(a)));
-        return true;
-      } catch (err) {
-        console.error('⚠️ Blob からのタスク復元に失敗しました:', err.message);
-        tasksHydrationPromise = null; // 次回リクエストで再試行できるようにする
-        return false;
+// 読み込みのタイミングは第9弾の TTL 付き再読み込みが制御します。
+async function loadTasksOnceFromBlob(db, blob) {
+  try {
+    const pathnames = [];
+    let cursor = undefined;
+    do {
+      const listed = await blob.list({
+        prefix: TASK_BLOB_PREFIX,
+        limit: 1000,
+        cursor: cursor,
+        token: process.env.BLOB_READ_WRITE_TOKEN
+      });
+      for (const b of (listed.blobs || [])) {
+        if (b.pathname && b.pathname.endsWith('.json') && !b.pathname.endsWith('/meta.json')) pathnames.push(b.pathname);
       }
-    })();
+      cursor = listed.hasMore ? listed.cursor : undefined;
+    } while (cursor);
+    const byId = new Map();
+    for (const t of (db.tasks || [])) byId.set(t.id, t);
+    for (const pathname of pathnames) {
+      try {
+        const got = await blob.get(pathname, { access: 'private', token: process.env.BLOB_READ_WRITE_TOKEN });
+        if (!got || !got.stream) continue;
+        const rec = JSON.parse(await new Response(got.stream).text());
+        if (rec && rec.id) byId.set(rec.id, rec);
+      } catch (err) {
+        console.error('⚠️ Blob のタスク読み込みに失敗（読み飛ばします）:', pathname, err.message);
+      }
+    }
+    db.tasks = [...byId.values()].sort((a, b) => taskSortKey(b).localeCompare(taskSortKey(a)));
+    return true;
+  } catch (err) {
+    console.error('⚠️ Blob からのタスク復元に失敗しました:', err.message);
+    return false;
   }
-  return tasksHydrationPromise;
 }
+const hydrateTasksFromBlob = createHydrationReloader('tasks', loadTasksOnceFromBlob);
 
 // Blob 上の task-messages/<タスクID>/<メッセージID>.json 群を
 // db.chatStore に取り込む（コールドスタート対策）。メッセージIDで重複を
 // 除き、Blob 側を正として置き換え、createdAt の古い順に並べる。
 // ID の無い旧レコード（db.json 由来）は先頭にそのまま残す。
-let chatHydrationPromise = null;
-function hydrateChatMessagesFromBlob(db) {
-  const blob = loadBlobClient();
-  if (!blob) return Promise.resolve(false);
-  if (!chatHydrationPromise) {
-    chatHydrationPromise = (async () => {
-      try {
-        const pathnames = [];
-        let cursor = undefined;
-        do {
-          const listed = await blob.list({
-            prefix: CHAT_BLOB_PREFIX,
-            limit: 1000,
-            cursor: cursor,
-            token: process.env.BLOB_READ_WRITE_TOKEN
-          });
-          for (const b of (listed.blobs || [])) {
-            if (b.pathname && b.pathname.endsWith('.json')) pathnames.push(b.pathname);
-          }
-          cursor = listed.hasMore ? listed.cursor : undefined;
-        } while (cursor);
-        const fromBlob = {}; // taskId -> messages[]
-        for (const pathname of pathnames) {
-          try {
-            const got = await blob.get(pathname, { access: 'private', token: process.env.BLOB_READ_WRITE_TOKEN });
-            if (!got || !got.stream) continue;
-            const msg = JSON.parse(await new Response(got.stream).text());
-            const parts = pathname.split('/');
-            const taskId = (msg && msg.taskId) || parts[1];
-            if (!msg || !taskId || !msg.id) continue;
-            (fromBlob[taskId] = fromBlob[taskId] || []).push(msg);
-          } catch (err) {
-            console.error('⚠️ Blob のチャットメッセージ読み込みに失敗（読み飛ばします）:', pathname, err.message);
-          }
-        }
-        db.chatStore = db.chatStore || {};
-        for (const taskId of Object.keys(fromBlob)) {
-          const existing = db.chatStore[taskId] || [];
-          const legacy = existing.filter(m => !m || !m.id);
-          const byId = new Map();
-          for (const m of existing) if (m && m.id) byId.set(m.id, m);
-          for (const m of fromBlob[taskId]) byId.set(m.id, m);
-          const merged = [...byId.values()].sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
-          db.chatStore[taskId] = [...legacy, ...merged];
-        }
-        return true;
-      } catch (err) {
-        console.error('⚠️ Blob からのチャット復元に失敗しました:', err.message);
-        chatHydrationPromise = null; // 次回リクエストで再試行できるようにする
-        return false;
+// 読み込みのタイミングは第9弾の TTL 付き再読み込みが制御します。
+async function loadChatMessagesOnceFromBlob(db, blob) {
+  try {
+    const pathnames = [];
+    let cursor = undefined;
+    do {
+      const listed = await blob.list({
+        prefix: CHAT_BLOB_PREFIX,
+        limit: 1000,
+        cursor: cursor,
+        token: process.env.BLOB_READ_WRITE_TOKEN
+      });
+      for (const b of (listed.blobs || [])) {
+        if (b.pathname && b.pathname.endsWith('.json')) pathnames.push(b.pathname);
       }
-    })();
+      cursor = listed.hasMore ? listed.cursor : undefined;
+    } while (cursor);
+    const fromBlob = {}; // taskId -> messages[]
+    for (const pathname of pathnames) {
+      try {
+        const got = await blob.get(pathname, { access: 'private', token: process.env.BLOB_READ_WRITE_TOKEN });
+        if (!got || !got.stream) continue;
+        const msg = JSON.parse(await new Response(got.stream).text());
+        const parts = pathname.split('/');
+        const taskId = (msg && msg.taskId) || parts[1];
+        if (!msg || !taskId || !msg.id) continue;
+        (fromBlob[taskId] = fromBlob[taskId] || []).push(msg);
+      } catch (err) {
+        console.error('⚠️ Blob のチャットメッセージ読み込みに失敗（読み飛ばします）:', pathname, err.message);
+      }
+    }
+    db.chatStore = db.chatStore || {};
+    for (const taskId of Object.keys(fromBlob)) {
+      const existing = db.chatStore[taskId] || [];
+      const legacy = existing.filter(m => !m || !m.id);
+      const byId = new Map();
+      for (const m of existing) if (m && m.id) byId.set(m.id, m);
+      for (const m of fromBlob[taskId]) byId.set(m.id, m);
+      const merged = [...byId.values()].sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+      db.chatStore[taskId] = [...legacy, ...merged];
+    }
+    return true;
+  } catch (err) {
+    console.error('⚠️ Blob からのチャット復元に失敗しました:', err.message);
+    return false;
   }
-  return chatHydrationPromise;
 }
+const hydrateChatMessagesFromBlob = createHydrationReloader('task-messages', loadChatMessagesOnceFromBlob);
 
 let inMemoryDB = null;
 
@@ -540,60 +581,57 @@ async function putStatsToBlob(stats) {
 }
 
 // Blob 上の stats/global.json を db.npoStats に取り込む（コールドスタート
-// 対策）。プロセス内で基本1回だけ実行し、失敗した場合は次回の呼び出しで
-// 再試行できるようにする。導出にはタスクの復元が先に必要です。
-let statsHydrationPromise = null;
-function hydrateStatsFromBlob(db) {
-  const blob = loadBlobClient();
-  if (!blob) return Promise.resolve(false);
-  if (!statsHydrationPromise) {
-    statsHydrationPromise = (async () => {
-      try {
-        await hydrateTasksFromBlob(db);
-        let saved = null;
-        try {
-          const got = await blob.get(STATS_BLOB_PATHNAME, { access: 'private', token: process.env.BLOB_READ_WRITE_TOKEN });
-          if (got && got.stream) {
-            const parsed = JSON.parse(await new Response(got.stream).text());
-            if (parsed && typeof parsed === 'object') saved = parsed;
-          }
-        } catch (err) {
-          console.error('⚠️ Blob の統計データ読み込みに失敗しました（導出値で再構築します）:', err.message);
-        }
-        const derived = deriveStatsFromTasks(db);
-        const current = (db.npoStats && typeof db.npoStats === 'object') ? db.npoStats : {};
-        const merged = {};
-        for (const key of Object.keys(SEED_DB.npoStats)) {
-          const savedVal = saved ? saved[key] : undefined;
-          if (STATS_DERIVABLE_KEYS.indexOf(key) !== -1) {
-            const d = derived[key] || 0;
-            merged[key] = isValidStatValue(savedVal) ? Math.max(savedVal, d) : d;
-          } else {
-            merged[key] = isValidStatValue(savedVal) ? savedVal
-              : (isValidStatValue(current[key]) ? current[key] : SEED_DB.npoStats[key]);
-          }
-        }
-        db.npoStats = merged;
-        const savedComplete = !!saved && Object.keys(SEED_DB.npoStats).every(k => isValidStatValue(saved[k]));
-        if (!savedComplete) {
-          // 保存済み統計が無い／不完全な場合は、再構築した値を書き戻して
-          // おきます（ベストエフォート。失敗しても次回また導出できます）。
-          try {
-            await putStatsToBlob(merged);
-          } catch (err) {
-            console.error('⚠️ Blob への統計データの修復保存に失敗しました:', err.message);
-          }
-        }
-        return true;
-      } catch (err) {
-        console.error('⚠️ Blob からの統計データ復元に失敗しました:', err.message);
-        statsHydrationPromise = null; // 次回リクエストで再試行できるようにする
-        return false;
+// 対策）。読み込みのタイミングは第9弾の TTL 付き再読み込みが制御します。
+// 導出にはタスクの復元が先に必要です（内側で hydrateTasksFromBlob を
+// 呼びます。そちらも TTL 制御下にあります）。
+// 統計の整合について（第9弾の判断）: 導出できる2項目は「保存値と導出値の
+// 大きい方」を採るため、TTL 内の古い読みでも加算が巻き戻ることはありま
+// せん。それでも完了APIでは、加算の前提を最新に揃えるため force で強制
+// 再読み込みしてから加算します（エンドポイント側のコメント参照）。
+async function loadStatsOnceFromBlob(db, blob) {
+  try {
+    await hydrateTasksFromBlob(db);
+    let saved = null;
+    try {
+      const got = await blob.get(STATS_BLOB_PATHNAME, { access: 'private', token: process.env.BLOB_READ_WRITE_TOKEN });
+      if (got && got.stream) {
+        const parsed = JSON.parse(await new Response(got.stream).text());
+        if (parsed && typeof parsed === 'object') saved = parsed;
       }
-    })();
+    } catch (err) {
+      console.error('⚠️ Blob の統計データ読み込みに失敗しました（導出値で再構築します）:', err.message);
+    }
+    const derived = deriveStatsFromTasks(db);
+    const current = (db.npoStats && typeof db.npoStats === 'object') ? db.npoStats : {};
+    const merged = {};
+    for (const key of Object.keys(SEED_DB.npoStats)) {
+      const savedVal = saved ? saved[key] : undefined;
+      if (STATS_DERIVABLE_KEYS.indexOf(key) !== -1) {
+        const d = derived[key] || 0;
+        merged[key] = isValidStatValue(savedVal) ? Math.max(savedVal, d) : d;
+      } else {
+        merged[key] = isValidStatValue(savedVal) ? savedVal
+          : (isValidStatValue(current[key]) ? current[key] : SEED_DB.npoStats[key]);
+      }
+    }
+    db.npoStats = merged;
+    const savedComplete = !!saved && Object.keys(SEED_DB.npoStats).every(k => isValidStatValue(saved[k]));
+    if (!savedComplete) {
+      // 保存済み統計が無い／不完全な場合は、再構築した値を書き戻して
+      // おきます（ベストエフォート。失敗しても次回また導出できます）。
+      try {
+        await putStatsToBlob(merged);
+      } catch (err) {
+        console.error('⚠️ Blob への統計データの修復保存に失敗しました:', err.message);
+      }
+    }
+    return true;
+  } catch (err) {
+    console.error('⚠️ Blob からの統計データ復元に失敗しました:', err.message);
+    return false;
   }
-  return statsHydrationPromise;
 }
+const hydrateStatsFromBlob = createHydrationReloader('stats', loadStatsOnceFromBlob);
 
 // --- Helper: Get Local LAN IPv4 Addresses ---
 function getLocalIpAddresses() {
@@ -753,10 +791,14 @@ const server = http.createServer(async (req, res) => {
     const parts = pathname.split('/');
     const taskId = parts[3];
     const db = loadDB();
-    await hydrateTasksFromBlob(db);
+    // 第9弾: 完了判定と統計加算は「最新の状態」が前提のため、TTL 内でも
+    // 強制的に読み直してから処理する（他インスタンスが書いたタスクが
+    // 見つからない、統計の加算が古い値から始まって実績を上書きする、
+    // といった事故を防ぐ）。
+    await hydrateTasksFromBlob(db, { force: true });
     // 第8弾: 統計も復元してから加算する（復元前の初期値に加算して保存すると
     // それまでの実績を上書きで消してしまうため）
-    await hydrateStatsFromBlob(db);
+    await hydrateStatsFromBlob(db, { force: true });
 
     // Only count the donation when the task transitions from open to
     // completed, so repeated or unknown completions never inflate the
@@ -1158,7 +1200,14 @@ const server = http.createServer(async (req, res) => {
         }
         const db = loadDB();
         await hydrateVerifyRequestsFromBlob(db);
-        const target = (db.verificationRequests || []).find(r => r.id === requestId);
+        let target = (db.verificationRequests || []).find(r => r.id === requestId);
+        if (!target) {
+          // 第9弾: 別インスタンスが書いた申請が TTL 内でまだ取り込まれて
+          // いない可能性があるため、見つからない場合だけ強制再読み込み
+          // してもう一度探す（本当に存在しない申請はそのまま 404）。
+          await hydrateVerifyRequestsFromBlob(db, { force: true });
+          target = (db.verificationRequests || []).find(r => r.id === requestId);
+        }
         if (!target) {
           res.writeHead(404, { 'Content-Type': 'application/json; charset=UTF-8' });
           res.end(JSON.stringify({ error: "request not found" }));
@@ -1396,7 +1445,14 @@ const server = http.createServer(async (req, res) => {
         }
         const db = loadDB();
         await hydrateCollectionFromBlob(db, 'coinPayments', COIN_BLOB_PREFIX);
-        const target = (db.coinPayments || []).find(c => c.id === paymentId);
+        let target = (db.coinPayments || []).find(c => c.id === paymentId);
+        if (!target) {
+          // 第9弾: 別インスタンスが書いた記録が TTL 内でまだ取り込まれて
+          // いない可能性があるため、見つからない場合だけ強制再読み込み
+          // してもう一度探す（本当に存在しない記録はそのまま 404）。
+          await hydrateCollectionFromBlob(db, 'coinPayments', COIN_BLOB_PREFIX, { force: true });
+          target = (db.coinPayments || []).find(c => c.id === paymentId);
+        }
         if (!target) {
           res.writeHead(404, { 'Content-Type': 'application/json; charset=UTF-8' });
           res.end(JSON.stringify({ error: "payment not found" }));
