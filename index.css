@@ -1359,3 +1359,59 @@ body.senior-mode .chat-send-btn {
   height: 50px !important;
   font-size: 1.25rem !important;
 }
+
+/* ===== 第6弾: ワンコイン寄付カウンター＆ワンコイン記録 ===== */
+.donation-counter-card {
+  margin-top: 1rem;
+  background: linear-gradient(135deg, #fff7ed 0%, #fef3c7 100%);
+  border: 1.5px solid #f59e0b;
+  border-radius: var(--radius-lg);
+  padding: 1rem 1.5rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  box-shadow: var(--shadow-sm);
+}
+.donation-counter-icon { font-size: 2rem; }
+.donation-counter-label {
+  font-size: 0.82rem;
+  color: #92400e;
+  font-weight: 700;
+}
+.donation-counter-value {
+  font-size: 1.25rem;
+  font-weight: 900;
+  color: #78350f;
+}
+.donation-counter-value span { font-size: 1.4rem; }
+
+.coin-memo-input {
+  width: 100%;
+  padding: 0.6rem;
+  font-size: 0.9rem;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-sizing: border-box;
+}
+.coin-record-list { margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.coin-record-item {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.75rem;
+  font-size: 0.85rem;
+  line-height: 1.55;
+}
+.coin-record-item .coin-amount { font-weight: 800; font-size: 0.95rem; }
+.coin-record-item .coin-sub { color: var(--text-muted); font-size: 0.78rem; }
+.coin-badge {
+  display: inline-block;
+  padding: 0.1rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 800;
+  margin-left: 0.4rem;
+}
+.coin-badge-held { background: #fffbeb; color: #d97706; border: 1px solid #d97706; }
+.coin-badge-handed { background: #d1fae5; color: #047857; border: 1px solid #059669; }
+.coin-empty { color: var(--text-muted); font-size: 0.82rem; text-align: center; padding: 0.75rem 0; }

@@ -95,6 +95,27 @@
   .status-pending { background: var(--warn-light); color: var(--warn); border: 1px solid var(--warn); }
   .status-approved { background: var(--primary-light); color: var(--primary-hover); border: 1px solid var(--primary); }
   .status-rejected { background: var(--danger-light); color: var(--danger); border: 1px solid var(--danger); }
+  .status-held { background: var(--warn-light); color: var(--warn); border: 1px solid var(--warn); }
+  .status-handed { background: var(--primary-light); color: var(--primary-hover); border: 1px solid var(--primary); }
+  .method-select {
+    padding: 0.55rem;
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 0.9rem;
+    background: white;
+  }
+  .form-field { margin-bottom: 0.75rem; }
+  .form-field label { display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 0.25rem; }
+  .form-field input {
+    width: 100%;
+    padding: 0.55rem;
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 0.95rem;
+  }
+  .totals-line { font-size: 0.95rem; line-height: 1.8; }
+  .totals-line strong { font-size: 1.05rem; }
+  .section-title { font-size: 1.3rem; margin: 2rem 0 0.25rem; }
   .reason-input {
     width: 100%;
     padding: 0.55rem;
@@ -155,6 +176,47 @@
       <button data-status="rejected">差し戻し</button>
     </div>
     <div id="requestList"></div>
+
+    <!-- ワンコイン台帳（第6弾） -->
+    <h1 class="section-title">🪙 ワンコイン台帳</h1>
+    <p class="lead">
+      手伝った人が記録した「500円の受け取り」の一覧です。預かったお金を実際に受け取ったら、方法（現金／振込）を選んで「受け取り確認」をしてください。
+    </p>
+    <div id="coinError" class="error-box"></div>
+    <div class="card">
+      <div class="totals-line" id="coinTotals">集計を読み込み中...</div>
+    </div>
+    <div id="coinList"></div>
+
+    <!-- 子ども食堂への寄付の記録（第6弾） -->
+    <h1 class="section-title">🎁 子ども食堂への寄付</h1>
+    <p class="lead">
+      運営に集まったお金を子ども食堂へ寄付したら、ここに記録してください。寄付累計はアプリのトップにも表示されます。
+    </p>
+    <div id="donationError" class="error-box"></div>
+    <div class="card">
+      <div class="totals-line" id="donationTotals">集計を読み込み中...</div>
+    </div>
+    <div class="card">
+      <div class="form-field">
+        <label for="donationAmount">寄付金額（円）</label>
+        <input type="number" id="donationAmount" min="1" max="1000000" step="1" placeholder="例: 5000">
+      </div>
+      <div class="form-field">
+        <label for="donationRecipient">寄付先</label>
+        <input type="text" id="donationRecipient" placeholder="例: ○○子ども食堂" maxlength="200">
+      </div>
+      <div class="form-field">
+        <label for="donationDate">寄付日</label>
+        <input type="date" id="donationDate">
+      </div>
+      <div class="form-field">
+        <label for="donationNote">メモ（任意）</label>
+        <input type="text" id="donationNote" placeholder="例: 11月分を手渡し" maxlength="500">
+      </div>
+      <button class="btn" id="btnRegisterDonation" style="width: 100%;">寄付を記録する</button>
+    </div>
+    <div id="donationList"></div>
   </div>
 
 </div>
@@ -305,10 +367,206 @@ async function reviewRequest(id, action) {
   loadRequests();
 }
 
+/* ===== ワンコイン台帳・寄付の記録（第6弾） ===== */
+
+function yen(n) {
+  return (Number(n) || 0).toLocaleString('ja-JP') + '円';
+}
+
+function coinStatusBadge(status) {
+  if (status === 'handed_over') return '<span class="status-badge status-handed">運営へ渡し済み</span>';
+  return '<span class="status-badge status-held">預かり中</span>';
+}
+
+function handoverMethodName(method) {
+  return method === 'cash' ? '現金' : (method === 'transfer' ? '振込' : '');
+}
+
+async function loadCoins() {
+  const passcode = getPasscode();
+  const listEl = document.getElementById("coinList");
+  const totalsEl = document.getElementById("coinTotals");
+  const errEl = document.getElementById("coinError");
+  errEl.style.display = "none";
+
+  const res = await adminFetch("/api/admin/coin-payments", passcode);
+  if (!res) {
+    listEl.innerHTML = '<div class="empty">サーバーに接続できませんでした。</div>';
+    return;
+  }
+  if (res.status === 403) {
+    errEl.textContent = "管理パスコードが違います。ログアウトして、もう一度入力してください。";
+    errEl.style.display = "block";
+    listEl.innerHTML = '';
+    return;
+  }
+  const list = await res.json().catch(() => null);
+  if (!Array.isArray(list)) {
+    listEl.innerHTML = '<div class="empty">ワンコインの記録はまだありません。</div>';
+    totalsEl.textContent = '';
+    return;
+  }
+
+  const held = list.filter(c => c.status !== 'handed_over');
+  const handed = list.filter(c => c.status === 'handed_over');
+  const sum = (arr) => arr.reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  totalsEl.innerHTML =
+    `預かり中: <strong>${held.length}件・${yen(sum(held))}</strong> ／ ` +
+    `運営へ渡し済み: <strong>${handed.length}件・${yen(sum(handed))}</strong>`;
+
+  if (list.length === 0) {
+    listEl.innerHTML = '<div class="empty">ワンコインの記録はまだありません。</div>';
+    return;
+  }
+
+  listEl.innerHTML = "";
+  list.forEach(c => {
+    const card = document.createElement("div");
+    card.className = "card";
+    const memo = c.memo ? `<div>メモ: ${escapeHTML(c.memo)}</div>` : "";
+    const handedLine = c.status === 'handed_over'
+      ? `<div>運営への受け渡し: ${formatDate(c.handedOverAt)}（${handoverMethodName(c.handoverMethod)}）</div>` : "";
+    const confirmControls = c.status !== 'handed_over' ? `
+      <div class="actions">
+        <select class="method-select" id="coin-method-${c.id}">
+          <option value="cash">現金で受け取った</option>
+          <option value="transfer">振込で受け取った</option>
+        </select>
+        <button class="btn" data-coin-confirm="${c.id}">💰 受け取り確認</button>
+      </div>` : "";
+    card.innerHTML = `
+      <div class="meta" style="font-size: 0.9rem; line-height: 1.7;">
+        <div class="name" style="font-size: 1.05rem; font-weight: 800;">${escapeHTML(c.displayName || '（名前なし）')} 様 — ${yen(c.amount)} ${coinStatusBadge(c.status)}</div>
+        ${memo}
+        <div>受け取り日時: ${formatDate(c.createdAt)}</div>
+        ${handedLine}
+        <div class="sub" style="color: var(--text-muted); font-size: 0.8rem; word-break: break-all;">利用者キー: ${escapeHTML(c.userKey || '')}</div>
+        <div class="sub" style="color: var(--text-muted); font-size: 0.8rem; word-break: break-all;">記録ID: ${escapeHTML(c.id || '')}</div>
+        ${confirmControls}
+      </div>`;
+    listEl.appendChild(card);
+  });
+
+  listEl.querySelectorAll("button[data-coin-confirm]").forEach(btn => {
+    btn.addEventListener("click", () => confirmCoin(btn.getAttribute("data-coin-confirm")));
+  });
+}
+
+async function confirmCoin(id) {
+  const passcode = getPasscode();
+  const errEl = document.getElementById("coinError");
+  errEl.style.display = "none";
+  const select = document.getElementById("coin-method-" + id);
+  const method = select ? select.value : "cash";
+  const res = await adminFetch(`/api/admin/coin-payments/${encodeURIComponent(id)}/confirm`, passcode, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ method })
+  });
+  if (!res || !res.ok) {
+    errEl.textContent = "受け取り確認に失敗しました。通信状態をご確認のうえ、もう一度お試しください。";
+    errEl.style.display = "block";
+    return;
+  }
+  loadCoins();
+  loadDonations();
+}
+
+async function loadDonations() {
+  const passcode = getPasscode();
+  const listEl = document.getElementById("donationList");
+  const totalsEl = document.getElementById("donationTotals");
+  const errEl = document.getElementById("donationError");
+  errEl.style.display = "none";
+
+  // 集計（公開サマリー）で合計を表示する
+  const sumRes = await adminFetch("/api/donations/summary", passcode);
+  if (sumRes && sumRes.ok) {
+    const s = await sumRes.json().catch(() => null);
+    if (s) {
+      totalsEl.innerHTML =
+        `子ども食堂への寄付累計: <strong>${yen(s.totalDonated)}（${s.donationCount || 0}回）</strong> ／ ` +
+        `運営の手元に集まって未寄付: <strong>${yen(s.awaitingDonation)}</strong> ／ ` +
+        `利用者が預かり中: <strong>${yen(s.currentlyHeld)}</strong>`;
+    }
+  }
+
+  const res = await adminFetch("/api/admin/donations", passcode);
+  if (!res) {
+    listEl.innerHTML = '<div class="empty">サーバーに接続できませんでした。</div>';
+    return;
+  }
+  if (res.status === 403) {
+    errEl.textContent = "管理パスコードが違います。ログアウトして、もう一度入力してください。";
+    errEl.style.display = "block";
+    listEl.innerHTML = '';
+    return;
+  }
+  const list = await res.json().catch(() => null);
+  if (!Array.isArray(list) || list.length === 0) {
+    listEl.innerHTML = '<div class="empty">寄付の記録はまだありません。</div>';
+    return;
+  }
+
+  listEl.innerHTML = "";
+  list.forEach(d => {
+    const card = document.createElement("div");
+    card.className = "card";
+    const note = d.note ? `<div>メモ: ${escapeHTML(d.note)}</div>` : "";
+    card.innerHTML = `
+      <div class="meta" style="font-size: 0.9rem; line-height: 1.7;">
+        <div class="name" style="font-size: 1.05rem; font-weight: 800;">${escapeHTML(d.recipient || '')} — ${yen(d.amount)}</div>
+        <div>寄付日: ${formatDate(d.donatedAt)}</div>
+        ${note}
+      </div>`;
+    listEl.appendChild(card);
+  });
+}
+
+async function registerDonation() {
+  const passcode = getPasscode();
+  const errEl = document.getElementById("donationError");
+  errEl.style.display = "none";
+  const amount = Number(document.getElementById("donationAmount").value);
+  const recipient = document.getElementById("donationRecipient").value.trim();
+  const dateValue = document.getElementById("donationDate").value;
+  const note = document.getElementById("donationNote").value.trim();
+
+  if (!Number.isInteger(amount) || amount < 1 || amount > 1000000) {
+    errEl.textContent = "寄付金額は1〜1,000,000円の整数で入力してください。";
+    errEl.style.display = "block";
+    return;
+  }
+  if (!recipient) {
+    errEl.textContent = "寄付先を入力してください。";
+    errEl.style.display = "block";
+    return;
+  }
+  const body = { amount, recipient, note };
+  if (dateValue) body.donatedAt = dateValue;
+
+  const res = await adminFetch("/api/admin/donations", passcode, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!res || !res.ok) {
+    errEl.textContent = "寄付の記録に失敗しました。入力内容と通信状態をご確認ください。";
+    errEl.style.display = "block";
+    return;
+  }
+  document.getElementById("donationAmount").value = "";
+  document.getElementById("donationRecipient").value = "";
+  document.getElementById("donationNote").value = "";
+  loadDonations();
+}
+
 function showList() {
   document.getElementById("loginView").style.display = "none";
   document.getElementById("listView").style.display = "block";
   loadRequests();
+  loadCoins();
+  loadDonations();
 }
 
 document.getElementById("btnLogin").addEventListener("click", async () => {
@@ -341,7 +599,19 @@ document.getElementById("passcodeInput").addEventListener("keydown", (e) => {
   if (e.key === "Enter") document.getElementById("btnLogin").click();
 });
 
-document.getElementById("btnReload").addEventListener("click", loadRequests);
+document.getElementById("btnReload").addEventListener("click", () => {
+  loadRequests();
+  loadCoins();
+  loadDonations();
+});
+document.getElementById("btnRegisterDonation").addEventListener("click", registerDonation);
+try {
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  const dd = String(today.getDate()).padStart(2, '0');
+  document.getElementById("donationDate").value = `${yyyy}-${mm}-${dd}`;
+} catch (e) {}
 document.getElementById("btnLogout").addEventListener("click", () => {
   try { sessionStorage.removeItem(PASSCODE_KEY); } catch (e) {}
   location.reload();

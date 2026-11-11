@@ -123,7 +123,9 @@ const STORAGE_KEYS = {
   verification: "osekkai_v2_user_verification",
   completedIds: "osekkai_v2_completed_task_ids",
   // 第3弾: LINE未連携時に写真申請を識別するための端末内利用者ID
-  userKey: "osekkai_v2_user_key"
+  userKey: "osekkai_v2_user_key",
+  // 第6弾: ワンコイン受け取り記録（サーバーに送れない環境向けの端末内保存）
+  coinPayments: "osekkai_v2_coin_payments"
 };
 
 // --- 本人確認状態のローカル保存（APIが使えない環境でも自分の認証状態を保持する） ---
@@ -230,6 +232,178 @@ async function syncMyVerificationStatus() {
 
 window.getMyUserKey = getMyUserKey;
 window.syncMyVerificationStatus = syncMyVerificationStatus;
+
+// ==========================================================================
+// ワンコイン寄付（第6弾）: 受け取り記録と寄付累計カウンター
+// - 手伝った人が「500円を受け取りました」を記録すると、サーバーの台帳に
+//   「預かり中（held）」として残ります。運営が受け取りを確認すると
+//   「運営へ渡し済み（handed_over）」に変わります。
+// - サーバーに送れない環境では端末内（localStorage）にだけ記録し、
+//   画面が止まらないようにします（記録自体は端末に残ります）。
+// ==========================================================================
+let myCoinPayments = [];
+
+function getStoredCoinPayments() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.coinPayments);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (e) {}
+  return [];
+}
+
+function saveStoredCoinPayments(list) {
+  try {
+    localStorage.setItem(STORAGE_KEYS.coinPayments, JSON.stringify(list));
+  } catch (e) {}
+}
+
+function formatCoinDate(iso) {
+  if (!iso) return "";
+  try {
+    return new Date(iso).toLocaleString("ja-JP", { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  } catch (e) { return iso; }
+}
+
+function renderCoinPayments() {
+  const listEl = document.getElementById("coinPaymentsList");
+  const summaryEl = document.getElementById("coinPaymentsSummary");
+  if (!listEl) return;
+
+  const held = myCoinPayments.filter(p => p.status !== "handed_over");
+  const heldTotal = held.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+  if (summaryEl) {
+    summaryEl.textContent = myCoinPayments.length === 0
+      ? ""
+      : `預かり中: ${held.length}件・${heldTotal.toLocaleString()}円 ／ 記録合計: ${myCoinPayments.length}件`;
+  }
+
+  if (myCoinPayments.length === 0) {
+    listEl.innerHTML = '<div class="coin-empty">まだ記録がありません。</div>';
+    return;
+  }
+
+  listEl.innerHTML = "";
+  myCoinPayments.forEach(p => {
+    const item = document.createElement("div");
+    item.className = "coin-record-item";
+    const handed = p.status === "handed_over";
+    const badge = handed
+      ? '<span class="coin-badge coin-badge-handed">運営へ渡し済み</span>'
+      : '<span class="coin-badge coin-badge-held">預かり中</span>';
+    const methodLabel = p.handoverMethod === "cash" ? "現金" : (p.handoverMethod === "transfer" ? "振込" : "");
+    const handedLine = handed
+      ? `<div class="coin-sub">運営への受け渡し: ${formatCoinDate(p.handedOverAt)}${methodLabel ? "（" + methodLabel + "）" : ""}</div>`
+      : "";
+    const memoLine = p.memo ? `<div>${escapeHTML(p.memo)}</div>` : "";
+    item.innerHTML = `
+      <span class="coin-amount">${(Number(p.amount) || 0).toLocaleString()}円</span>${badge}
+      ${memoLine}
+      <div class="coin-sub">受け取り: ${formatCoinDate(p.createdAt)}</div>
+      ${handedLine}`;
+    listEl.appendChild(item);
+  });
+}
+
+// サーバーに自分の記録があれば、その状態（運営の確認結果を含む）を優先する
+async function syncMyCoinPayments() {
+  try {
+    const userKey = getMyUserKey();
+    const res = await apiFetch("/api/coin-payments/mine?userKey=" + encodeURIComponent(userKey));
+    if (!res) return;
+    const data = await res.json();
+    if (data && Array.isArray(data.payments)) {
+      myCoinPayments = data.payments;
+      saveStoredCoinPayments(myCoinPayments);
+      renderCoinPayments();
+    }
+  } catch (err) {
+    console.warn("⚠️ coin-payments/mine sync error:", err);
+  }
+}
+
+async function recordCoinPayment() {
+  const memoInput = document.getElementById("coinMemoInput");
+  const memo = memoInput ? memoInput.value.trim() : "";
+  const btn = document.getElementById("btnRecordCoin");
+  if (btn) btn.disabled = true;
+
+  let saved = null;
+  try {
+    const res = await apiFetch("/api/coin-payments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        userKey: getMyUserKey(),
+        displayName: getMyDisplayName(),
+        amount: 500,
+        memo: memo
+      })
+    });
+    if (res) {
+      const data = await res.json();
+      if (data && data.payment) saved = data.payment;
+    }
+  } catch (err) {
+    console.warn("⚠️ coin-payments submit error:", err);
+  }
+
+  if (!saved) {
+    // サーバーに送れない環境: 端末内にだけ記録する（画面は止めない）
+    saved = {
+      id: "local-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+      userKey: getMyUserKey(),
+      displayName: getMyDisplayName(),
+      amount: 500,
+      memo: memo,
+      taskId: null,
+      status: "held",
+      createdAt: new Date().toISOString(),
+      handedOverAt: null,
+      handoverMethod: null
+    };
+  }
+
+  myCoinPayments.unshift(saved);
+  saveStoredCoinPayments(myCoinPayments);
+  renderCoinPayments();
+  if (memoInput) memoInput.value = "";
+  if (btn) btn.disabled = false;
+  showToast("🪙 500円の受け取りを記録しました。預かったお金は運営へお渡しください。");
+}
+
+// トップの寄付カウンター（公開サマリー）。取得できない場合はカードを出さない
+async function fetchDonationSummary() {
+  const card = document.getElementById("donationCounterCard");
+  if (!card) return;
+  try {
+    const res = await apiFetch("/api/donations/summary");
+    if (!res) return;
+    const data = await res.json();
+    if (!data || typeof data.totalDonated !== "number") return;
+    const yenEl = document.getElementById("donationTotalYen");
+    const countEl = document.getElementById("donationTotalCount");
+    if (yenEl) yenEl.textContent = data.totalDonated.toLocaleString();
+    if (countEl) countEl.textContent = (data.donationCount || 0).toLocaleString();
+    card.style.display = "flex";
+  } catch (err) {
+    console.warn("⚠️ donations/summary fetch error:", err);
+  }
+}
+
+function initCoinFeatures() {
+  myCoinPayments = getStoredCoinPayments();
+  renderCoinPayments();
+  const btn = document.getElementById("btnRecordCoin");
+  if (btn) btn.addEventListener("click", recordCoinPayment);
+  syncMyCoinPayments();
+  fetchDonationSummary();
+}
+
+window.syncMyCoinPayments = syncMyCoinPayments;
+window.fetchDonationSummary = fetchDonationSummary;
 
 async function fetchUserVerification() {
   // 自分の認証状態は、まず自分のブラウザに保存されたものを正とする
@@ -451,17 +625,26 @@ async function createNewTask(taskData) {
     fuzzyLocation: `${taskData.area}（約500m圏内）`,
     exactLocation: `${taskData.area} 登録住所`,
     requesterName: lineUserProfile.displayName ? `${lineUserProfile.displayName}様` : "あなた (浜松市民・本人確認済み)",
+    // 第7弾: 投稿者の利用者キーも持たせ、サーバー側レコードと形を揃える
+    requesterKey: getMyUserKey(),
     requesterVerified: true,
     timeAgo: "たった今",
     status: "open",
-    donationAmount: 500
+    donationAmount: 500,
+    createdAt: new Date().toISOString()
   };
 
   try {
     const res = await apiFetch("/api/tasks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(taskData)
+      // 第7弾: 投稿者情報（利用者キーと表示名）も一緒に送り、サーバーに
+      // 保存された共有レコードから「誰の投稿か」が分かるようにする
+      body: JSON.stringify({
+        ...taskData,
+        userKey: getMyUserKey(),
+        requesterName: lineUserProfile.displayName ? `${lineUserProfile.displayName}様` : ""
+      })
     });
     if (res) {
       const data = await res.json();
@@ -550,11 +733,23 @@ async function fetchChatMessages(taskId) {
     if (res) {
       const serverMessages = await res.json();
       if (Array.isArray(serverMessages)) {
+        // 第7弾: サーバー履歴は全端末で共有される。メッセージの sender は
+        // 「送った端末から見た相対表記（me/them）」のため、そのままでは
+        // 他人の発言が自分の吹き出しになってしまう。senderKey（送信者の
+        // 利用者キー）があるメッセージは、自分のキーと比べて表示側を
+        // 決め直す（自動返信の system:auto-reply は常に相手側になる）。
+        const myKey = getMyUserKey();
+        const normalized = serverMessages.map(m => {
+          if (m && m.senderKey) {
+            return { ...m, sender: m.senderKey === myKey ? "me" : "them" };
+          }
+          return m;
+        });
         // サーバー履歴を正とし、サーバーに届いていない自分のローカル送信分があれば保持する
         const localOnly = (chatHistories[taskId] || []).filter(m =>
-          m._local && !serverMessages.some(s => s.sender === m.sender && s.text === m.text)
+          m._local && !normalized.some(s => (m.id && s.id === m.id) || (s.sender === m.sender && s.text === m.text))
         );
-        chatHistories[taskId] = [...serverMessages, ...localOnly];
+        chatHistories[taskId] = [...normalized, ...localOnly];
         saveStoredChats();
         if (currentChatTaskId === taskId) {
           renderChatMessages();
@@ -580,7 +775,9 @@ async function postChatMessage(taskId, text) {
     const res = await apiFetch(`/api/chat/${taskId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: text, sender: "me" })
+      // 第7弾: 送信者の利用者キーと表示名も送り、受け取った側の端末で
+      // 「誰の発言か」が分かるようにする
+      body: JSON.stringify({ text: text, sender: "me", userKey: getMyUserKey(), displayName: getMyDisplayName() })
     });
     if (res) {
       // サーバー側の自動返信（約0.8秒後）を拾うため、少し待ってから再取得する
@@ -627,6 +824,7 @@ document.addEventListener("DOMContentLoaded", () => {
   fetchStats();
   fetchTasks();
   fetchUserVerification();
+  initCoinFeatures();
   setupEventListeners();
   setupWardFilters();
   initLineLiff();

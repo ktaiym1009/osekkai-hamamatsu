@@ -111,6 +111,17 @@
         </button>
       </div>
     </div>
+
+    <!-- Donation Counter (第6弾: ワンコイン寄付の累計をサーバー集計から表示) -->
+    <div class="donation-counter-card" id="donationCounterCard" style="display: none;">
+      <div class="donation-counter-icon">🎁</div>
+      <div class="donation-counter-text">
+        <div class="donation-counter-label">みんなのワンコインで、子ども食堂へ届けた寄付</div>
+        <div class="donation-counter-value">
+          寄付累計 <span id="donationTotalYen">0</span>円（<span id="donationTotalCount">0</span>回）
+        </div>
+      </div>
+    </div>
   </section>
 
   <!-- Main Content Layout -->
@@ -148,6 +159,23 @@
         <button class="btn-verify" id="openVerifyModalBtn">
           <i class="fa-solid fa-id-card"></i> 本人確認書類の更新・設定
         </button>
+      </div>
+
+      <!-- One-Coin Donation Records (第6弾) -->
+      <div class="card-glass" id="coinPaymentsCard">
+        <h3 class="panel-title">
+          <i class="fa-solid fa-coins" style="color: var(--accent-dark);"></i>
+          ワンコイン記録
+        </h3>
+        <p style="font-size: 0.82rem; color: var(--text-muted);">
+          助け合いのお礼（500円）を受け取ったら、ここに記録してください。預かったお金は運営へお渡しください（現金・振込どちらでもOK）。運営が受け取りを確認すると「運営へ渡し済み」になります。
+        </p>
+        <input type="text" id="coinMemoInput" class="coin-memo-input" placeholder="メモ（任意：相手の名前や助けた内容）" maxlength="500">
+        <button class="btn-verify" id="btnRecordCoin" style="margin-top: 0.5rem;">
+          <i class="fa-solid fa-yen-sign"></i> 500円を受け取りました
+        </button>
+        <div id="coinPaymentsSummary" style="font-size: 0.82rem; color: var(--text-muted); margin-top: 0.75rem;"></div>
+        <div id="coinPaymentsList" class="coin-record-list"></div>
       </div>
 
       <!-- Family Guardian Alert Notification Simulation -->
