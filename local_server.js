@@ -345,6 +345,51 @@ function publicTask(t) {
   return view;
 }
 
+// --- チャットの当事者制限（第10弾） ---
+// 第7弾でチャットを共有化した結果、投稿を開いた人なら誰でも履歴の閲覧・
+// 送信ができる状態になっていました。住所や電話番号の打ち合わせをする場
+// として危険なため、第10弾で「投稿者（requesterKey）と、確定した手伝う人
+// （helperKey）だけが読み書きできる」ように制限します。
+// 方針:
+//   - userKey は必須。GET はクエリ、POST/claim/release は body で受けます。
+//     無い場合は 400、当事者でない場合は 403、タスク自体が無い場合は 404。
+//   - requesterKey が null の旧タスク（第7弾より前の互換データ）は、投稿者
+//     本人を特定できないため「誰も投稿者にはなれない」扱いで安全側に倒し
+//     ます（手伝う人が claim すれば、その人だけが当事者になります）。
+//   - 正直な限界: userKey はクライアント申告制（LIFF の利用者ID / 端末ID）
+//     で、強い本人認証ではありません。他人のキーを知れば成りすませてしま
+//     います。それでも「誰でも見られる」状態からは大きく改善します。
+//     本格的な認証強化は B方式（専用データベース＋認証基盤）移行時の課題
+//     です（詳細は REPORT.md 第10弾）。
+function getChatPartyRole(task, userKey) {
+  if (!task || !userKey) return null;
+  if (task.requesterKey && task.requesterKey === userKey) return 'requester';
+  if (task.helperKey && task.helperKey === userKey) return 'helper';
+  return null;
+}
+
+// タスクを ID で探す。見つからない場合は TTL 内の未取り込みの可能性が
+// あるため、強制再読み込みしてもう一度探す（第9弾の review/confirm と
+// 同じ方針）。それでも無ければ null。
+async function findTaskWithReload(db, taskId) {
+  let task = (db.tasks || []).find(t => t.id === taskId);
+  if (!task) {
+    await hydrateTasksFromBlob(db, { force: true });
+    task = (db.tasks || []).find(t => t.id === taskId);
+  }
+  return task || null;
+}
+
+// タスクの変更（claim / release など）を保存する。Blob 保存のタスクは
+// 先に Blob 側を更新し、失敗したら例外を投げる（メモリ側は変えない。
+// 完了APIと同じ方針）。
+async function persistTaskUpdate(task, updated) {
+  if (loadBlobClient() && updated.storage === 'blob') {
+    await putRecordMetaToBlob(updated.blobPathname || taskBlobPathname(updated.id), updated);
+  }
+  Object.assign(task, updated);
+}
+
 // タスクの並び順キー（新しい順）。createdAt が無い旧レコードは、ID に
 // 埋め込まれた作成時刻（task-<ミリ秒>-...）で代用する。
 function taskSortKey(t) {
@@ -667,7 +712,7 @@ const server = http.createServer(async (req, res) => {
 
   // CORS Headers
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Admin-Passcode');
 
   // Cache Control Headers (Prevent Mobile Browser Stale Cache)
@@ -750,6 +795,11 @@ const server = http.createServer(async (req, res) => {
           exactLocation: `${data.area || '浜松市'} 登録住所`,
           requesterName: requesterName || "あなた (浜松市民・本人確認済み)",
           requesterKey: data.userKey ? String(data.userKey).trim().slice(0, 128) : null,
+          // 第10弾: マッチング状態をサーバー側に持たせる。手伝う人が
+          // 確定したら helperKey / helperName に入り、チャットの閲覧・
+          // 送信は投稿者とこの手伝う人だけに制限される。
+          helperKey: null,
+          helperName: '',
           requesterVerified: true,
           timeAgo: "たった今",
           status: "open",
@@ -854,12 +904,272 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 5. GET /api/chat/:id
+  // 4.5 POST /api/tasks/:id/claim （第10弾: 手伝う人の確定）
+  // 「手伝います」と申し出た人を、そのタスクの手伝う人としてサーバー側に
+  // 確定します。確定した人だけが投稿者とチャットできるようになります。
+  if (pathname.startsWith('/api/tasks/') && pathname.endsWith('/claim') && req.method === 'POST') {
+    const taskId = pathname.split('/')[3];
+    let body = '';
+    req.on('data', chunk => { body += chunk.toString(); });
+    req.on('end', async () => {
+      let data;
+      try {
+        data = JSON.parse(body);
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=UTF-8' });
+        res.end(JSON.stringify({ error: "Invalid JSON" }));
+        return;
+      }
+      try {
+        const userKey = String(data.userKey || '').trim().slice(0, 128);
+        if (!userKey) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "userKey is required" }));
+          return;
+        }
+        const db = loadDB();
+        await hydrateTasksFromBlob(db);
+        const task = await findTaskWithReload(db, taskId);
+        if (!task) {
+          res.writeHead(404, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "task not found" }));
+          return;
+        }
+        if (task.status === 'completed') {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "task is already completed" }));
+          return;
+        }
+        // 投稿者本人は自分の投稿の手伝う人にはなれない
+        if (task.requesterKey && task.requesterKey === userKey) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "requester cannot claim own task" }));
+          return;
+        }
+        if (task.helperKey) {
+          if (task.helperKey === userKey) {
+            // 自分が既に確定済みなら、そのまま現在の状態を返す（冪等）
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=UTF-8' });
+            res.end(JSON.stringify({ success: true, task: publicTask(task) }));
+            return;
+          }
+          res.writeHead(409, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "task already has a helper" }));
+          return;
+        }
+        const updated = {
+          ...task,
+          helperKey: userKey,
+          helperName: String(data.displayName || '').trim().slice(0, 100)
+        };
+        try {
+          await persistTaskUpdate(task, updated);
+        } catch (err) {
+          console.error('⚠️ Blob への手伝う人確定の保存に失敗しました:', err.message);
+          res.writeHead(500, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "failed to store claim" }));
+          return;
+        }
+        saveDB(db);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=UTF-8' });
+        res.end(JSON.stringify({ success: true, task: publicTask(task) }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=UTF-8' });
+        res.end(JSON.stringify({ error: "Internal Server Error" }));
+      }
+    });
+    return;
+  }
+
+  // 4.6 POST /api/tasks/:id/release （第10弾: 手伝う人の取り消し）
+  // 確定した手伝う人本人が、確定を取り消して枠を空に戻します。
+  if (pathname.startsWith('/api/tasks/') && pathname.endsWith('/release') && req.method === 'POST') {
+    const taskId = pathname.split('/')[3];
+    let body = '';
+    req.on('data', chunk => { body += chunk.toString(); });
+    req.on('end', async () => {
+      let data;
+      try {
+        data = JSON.parse(body);
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=UTF-8' });
+        res.end(JSON.stringify({ error: "Invalid JSON" }));
+        return;
+      }
+      try {
+        const userKey = String(data.userKey || '').trim().slice(0, 128);
+        if (!userKey) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "userKey is required" }));
+          return;
+        }
+        const db = loadDB();
+        await hydrateTasksFromBlob(db);
+        const task = await findTaskWithReload(db, taskId);
+        if (!task) {
+          res.writeHead(404, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "task not found" }));
+          return;
+        }
+        if (!task.helperKey) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "task has no helper to release" }));
+          return;
+        }
+        if (task.helperKey !== userKey) {
+          res.writeHead(403, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "only the confirmed helper can release" }));
+          return;
+        }
+        const updated = { ...task, helperKey: null, helperName: '' };
+        try {
+          await persistTaskUpdate(task, updated);
+        } catch (err) {
+          console.error('⚠️ Blob への手伝う人取り消しの保存に失敗しました:', err.message);
+          res.writeHead(500, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "failed to store release" }));
+          return;
+        }
+        saveDB(db);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=UTF-8' });
+        res.end(JSON.stringify({ success: true, task: publicTask(task) }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=UTF-8' });
+        res.end(JSON.stringify({ error: "Internal Server Error" }));
+      }
+    });
+    return;
+  }
+
+  // 4.7 GET /api/admin/tasks （第10弾: 運営者: 投稿の一覧。パスコード必須）
+  // 公開の一覧APIは募集中（open）のみ返すため、完了済みを含む全件を
+  // 運営画面（削除・訂正用）に返す専用の一覧を用意します。
+  if (pathname === '/api/admin/tasks' && req.method === 'GET') {
+    if (!hasAdminPasscode(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=UTF-8' });
+      res.end(JSON.stringify({ error: "admin passcode required" }));
+      return;
+    }
+    const db = loadDB();
+    await hydrateTasksFromBlob(db);
+    const list = (db.tasks || []).map(publicTask);
+    list.sort((a, b) => taskSortKey(b).localeCompare(taskSortKey(a)));
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=UTF-8' });
+    res.end(JSON.stringify(list));
+    return;
+  }
+
+  // 4.8 DELETE /api/admin/tasks/:id （第10弾: 運営者: 投稿の削除。パスコード必須）
+  // テスト投稿などの掃除用です。タスク本体と、そのタスクのチャット
+  // メッセージを Blob / メモリの両方から削除します。
+  // 統計の扱い（第10弾の判断）: 削除後は「残った完了済みタスクからの
+  // 再導出」を正として統計を再計算し、保存します。第8弾の復元フォール
+  // バック（保存値と導出値の大きい方）は「事故からの自動修復」のための
+  // 仕組みで、管理者が意図的にデータを消す操作には適用しません（適用
+  // すると、消したはずのテスト完了分が数字だけ復活してしまいます）。
+  // 保存の順序: 先に再計算後の統計を Blob へ保存し、次にチャットと
+  // タスクの Blob を削除し、最後にメモリへ反映します。途中で失敗した
+  // 場合はメモリを変えず、次回の復元（大きい方ルール）が実態に合わせて
+  // 自動修復します。
+  if (pathname.startsWith('/api/admin/tasks/') && req.method === 'DELETE') {
+    if (!hasAdminPasscode(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=UTF-8' });
+      res.end(JSON.stringify({ error: "admin passcode required" }));
+      return;
+    }
+    const taskId = pathname.split('/')[4];
+    try {
+      const db = loadDB();
+      await hydrateTasksFromBlob(db);
+      await hydrateChatMessagesFromBlob(db);
+      // 統計のうち導出できない2項目（supportedCafeterias 等）を古い
+      // メモリ値で潰さないよう、再計算の前に統計も最新化しておく
+      await hydrateStatsFromBlob(db, { force: true });
+      const task = await findTaskWithReload(db, taskId);
+      if (!task) {
+        res.writeHead(404, { 'Content-Type': 'application/json; charset=UTF-8' });
+        res.end(JSON.stringify({ error: "task not found" }));
+        return;
+      }
+      // 削除後の統計（導出できる2項目のみ再計算。他の2項目は対象外）
+      const remaining = (db.tasks || []).filter(t => t.id !== taskId);
+      const derived = deriveStatsFromTasks({ tasks: remaining });
+      const newStats = {
+        ...db.npoStats,
+        totalMealsServed: derived.totalMealsServed,
+        totalDonationYen: derived.totalDonationYen
+      };
+      const blob = loadBlobClient();
+      if (blob) {
+        try {
+          await putStatsToBlob(newStats);
+          // チャットメッセージの Blob を削除する
+          const msgPrefix = CHAT_BLOB_PREFIX + taskId + '/';
+          const pathnames = [];
+          let cursor = undefined;
+          do {
+            const listed = await blob.list({
+              prefix: msgPrefix,
+              limit: 1000,
+              cursor: cursor,
+              token: process.env.BLOB_READ_WRITE_TOKEN
+            });
+            for (const b of (listed.blobs || [])) {
+              if (b.pathname) pathnames.push(b.pathname);
+            }
+            cursor = listed.hasMore ? listed.cursor : undefined;
+          } while (cursor);
+          if (pathnames.length > 0) {
+            await blob.del(pathnames, { token: process.env.BLOB_READ_WRITE_TOKEN });
+          }
+          await blob.del(task.blobPathname || taskBlobPathname(taskId), { token: process.env.BLOB_READ_WRITE_TOKEN });
+        } catch (err) {
+          console.error('⚠️ Blob からのタスク削除に失敗しました:', err.message);
+          res.writeHead(500, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "failed to delete task" }));
+          return;
+        }
+      }
+      db.tasks = remaining;
+      if (db.chatStore) delete db.chatStore[taskId];
+      db.npoStats = newStats;
+      saveDB(db);
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=UTF-8' });
+      res.end(JSON.stringify({ success: true, npoStats: db.npoStats }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=UTF-8' });
+      res.end(JSON.stringify({ error: "Internal Server Error" }));
+    }
+    return;
+  }
+
+  // 5. GET /api/chat/:id （第10弾: 当事者だけが閲覧可）
+  // userKey（クエリ必須）が、そのタスクの投稿者または確定した手伝う人と
+  // 一致する場合だけ履歴を返します。方針の詳細は getChatPartyRole の
+  // コメント（第10弾）を参照してください。
   if (pathname.startsWith('/api/chat/') && req.method === 'GET') {
     const taskId = pathname.split('/')[3];
+    const userKey = String(parsedUrl.searchParams.get('userKey') || '').trim().slice(0, 128);
+    if (!userKey) {
+      res.writeHead(400, { 'Content-Type': 'application/json; charset=UTF-8' });
+      res.end(JSON.stringify({ error: "userKey is required" }));
+      return;
+    }
     const db = loadDB();
-    // 第7弾: Blob から復元し、誰が開いても同じ履歴が見えるようにする
+    await hydrateTasksFromBlob(db);
+    // 第7弾: Blob から復元し、当事者の端末では同じ履歴が見えるようにする
     await hydrateChatMessagesFromBlob(db);
+    const task = await findTaskWithReload(db, taskId);
+    if (!task) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=UTF-8' });
+      res.end(JSON.stringify({ error: "task not found" }));
+      return;
+    }
+    if (!getChatPartyRole(task, userKey)) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=UTF-8' });
+      res.end(JSON.stringify({ error: "chat is only visible to the requester and the confirmed helper" }));
+      return;
+    }
     const history = (db.chatStore && db.chatStore[taskId]) ? db.chatStore[taskId] : [];
     res.writeHead(200, { 'Content-Type': 'application/json; charset=UTF-8' });
     res.end(JSON.stringify(history));
@@ -881,8 +1191,27 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       try {
+        // 第10弾: 送信も当事者だけに制限する（GET と同じ方針）
+        const userKey = String(data.userKey || data.senderKey || '').trim().slice(0, 128);
+        if (!userKey) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "userKey is required" }));
+          return;
+        }
         const db = loadDB();
+        await hydrateTasksFromBlob(db);
         await hydrateChatMessagesFromBlob(db);
+        const task = await findTaskWithReload(db, taskId);
+        if (!task) {
+          res.writeHead(404, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "task not found" }));
+          return;
+        }
+        if (!getChatPartyRole(task, userKey)) {
+          res.writeHead(403, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "chat is only visible to the requester and the confirmed helper" }));
+          return;
+        }
         db.chatStore = db.chatStore || {};
         if (!db.chatStore[taskId]) db.chatStore[taskId] = [];
 
@@ -919,46 +1248,10 @@ const server = http.createServer(async (req, res) => {
         }
         db.chatStore[taskId].push(userMsg);
 
-        // Auto reply if sender is 'me' and autoReply flag is set.
-        // 制約: この自動返信は応答後に setTimeout で保存されます。Vercel のような
-        // サーバーレス環境ではレスポンス後にプロセスが凍結・終了するため、
-        // 自動返信が保存されない場合があります（ローカル実行では動作します）。
-        if (data.sender !== 'them' && data.autoReply !== false) {
-          setTimeout(async () => {
-            const dbAsync = loadDB();
-            dbAsync.chatStore = dbAsync.chatStore || {};
-            if (!dbAsync.chatStore[taskId]) dbAsync.chatStore[taskId] = [];
-            const replies = (dbAsync.autoReplies && dbAsync.autoReplies.length > 0) ? dbAsync.autoReplies : [
-              "ご連絡ありがとうございます！お待ちしておりますね。",
-              "ありがとうございます！助かります。どうぞ気をつけてお越しください。",
-              "承知いたしました！お会いできるのを楽しみにしております。"
-            ];
-            const randomReply = replies[Math.floor(Math.random() * replies.length)];
-            const replyMsg = {
-              id: "msg-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
-              taskId: taskId,
-              sender: "them",
-              // 自動返信は誰の発言でもないため、専用の送信者キーを持たせ、
-              // どの端末でも「相手側」の吹き出しになるようにする
-              senderKey: "system:auto-reply",
-              senderName: "",
-              text: randomReply,
-              time: timeStr,
-              createdAt: new Date().toISOString()
-            };
-            dbAsync.chatStore[taskId].push(replyMsg);
-            // 第7弾: 自動返信も Blob に保存し、再起動後も履歴に残るようにする
-            // （保存はベストエフォート。失敗してもメモリ上の履歴は維持する）
-            if (loadBlobClient()) {
-              try {
-                await putRecordMetaToBlob(chatMessageBlobPathname(taskId, replyMsg.id), replyMsg);
-              } catch (err) {
-                console.error('⚠️ Blob への自動返信の保存に失敗しました:', err.message);
-              }
-            }
-            saveDB(dbAsync);
-          }, 800);
-        }
+        // 第10弾: 自動返信は廃止しました。決まった文句の返信が本物の
+        // 相手の返事に見えて紛らわしい、と実機確認で指摘されたためです。
+        // 過去に生成された自動返信（senderKey: 'system:auto-reply'）は
+        // 履歴に残りますが、今後は新規に生成しません。
 
         saveDB(db);
 
@@ -1493,6 +1786,52 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // 16.5 DELETE /api/admin/coin-payments/:id （第10弾: 運営者: ワンコイン記録の削除。パスコード必須）
+  // テスト記録などの掃除・誤記録の訂正用です。Blob とメモリの両方から
+  // 削除します（公開サマリーは記録の配列から都度計算されるため、削除
+  // すれば集計にも自動で反映されます）。
+  if (pathname.startsWith('/api/admin/coin-payments/') && req.method === 'DELETE') {
+    if (!hasAdminPasscode(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=UTF-8' });
+      res.end(JSON.stringify({ error: "admin passcode required" }));
+      return;
+    }
+    const paymentId = pathname.split('/')[4];
+    try {
+      const db = loadDB();
+      await hydrateCollectionFromBlob(db, 'coinPayments', COIN_BLOB_PREFIX);
+      let target = (db.coinPayments || []).find(c => c.id === paymentId);
+      if (!target) {
+        await hydrateCollectionFromBlob(db, 'coinPayments', COIN_BLOB_PREFIX, { force: true });
+        target = (db.coinPayments || []).find(c => c.id === paymentId);
+      }
+      if (!target) {
+        res.writeHead(404, { 'Content-Type': 'application/json; charset=UTF-8' });
+        res.end(JSON.stringify({ error: "payment not found" }));
+        return;
+      }
+      const blob = loadBlobClient();
+      if (blob && target.storage === 'blob') {
+        try {
+          await blob.del(target.metaBlobPathname || coinMetaPathname(target.id), { token: process.env.BLOB_READ_WRITE_TOKEN });
+        } catch (err) {
+          console.error('⚠️ Blob からのワンコイン記録の削除に失敗しました:', err.message);
+          res.writeHead(500, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "failed to delete coin payment" }));
+          return;
+        }
+      }
+      db.coinPayments = (db.coinPayments || []).filter(c => c.id !== paymentId);
+      saveDB(db);
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=UTF-8' });
+      res.end(JSON.stringify({ success: true }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=UTF-8' });
+      res.end(JSON.stringify({ error: "Internal Server Error" }));
+    }
+    return;
+  }
+
   // 17. POST /api/admin/donations （運営者: 寄付の登録。パスコード必須）
   if (pathname === '/api/admin/donations' && req.method === 'POST') {
     if (!hasAdminPasscode(req)) {
@@ -1582,6 +1921,51 @@ const server = http.createServer(async (req, res) => {
     list.sort((a, b) => String(b.donatedAt).localeCompare(String(a.donatedAt)));
     res.writeHead(200, { 'Content-Type': 'application/json; charset=UTF-8' });
     res.end(JSON.stringify(list));
+    return;
+  }
+
+  // 18.5 DELETE /api/admin/donations/:id （第10弾: 運営者: 寄付記録の削除。パスコード必須）
+  // 誤記録の訂正・テスト記録の掃除用です。Blob とメモリの両方から削除
+  // します（寄付累計は記録の配列から都度計算されるため自動で追随）。
+  if (pathname.startsWith('/api/admin/donations/') && req.method === 'DELETE') {
+    if (!hasAdminPasscode(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=UTF-8' });
+      res.end(JSON.stringify({ error: "admin passcode required" }));
+      return;
+    }
+    const donationId = pathname.split('/')[4];
+    try {
+      const db = loadDB();
+      await hydrateCollectionFromBlob(db, 'donations', DONATION_BLOB_PREFIX);
+      let target = (db.donations || []).find(d => d.id === donationId);
+      if (!target) {
+        await hydrateCollectionFromBlob(db, 'donations', DONATION_BLOB_PREFIX, { force: true });
+        target = (db.donations || []).find(d => d.id === donationId);
+      }
+      if (!target) {
+        res.writeHead(404, { 'Content-Type': 'application/json; charset=UTF-8' });
+        res.end(JSON.stringify({ error: "donation not found" }));
+        return;
+      }
+      const blob = loadBlobClient();
+      if (blob && target.storage === 'blob') {
+        try {
+          await blob.del(target.metaBlobPathname || donationMetaPathname(target.id), { token: process.env.BLOB_READ_WRITE_TOKEN });
+        } catch (err) {
+          console.error('⚠️ Blob からの寄付記録の削除に失敗しました:', err.message);
+          res.writeHead(500, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "failed to delete donation" }));
+          return;
+        }
+      }
+      db.donations = (db.donations || []).filter(d => d.id !== donationId);
+      saveDB(db);
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=UTF-8' });
+      res.end(JSON.stringify({ success: true }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=UTF-8' });
+      res.end(JSON.stringify({ error: "Internal Server Error" }));
+    }
     return;
   }
 

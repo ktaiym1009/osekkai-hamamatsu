@@ -217,6 +217,14 @@
       <button class="btn" id="btnRegisterDonation" style="width: 100%;">寄付を記録する</button>
     </div>
     <div id="donationList"></div>
+
+    <!-- 投稿（タスク）の管理（第10弾） -->
+    <h1 class="section-title">📋 投稿（タスク）の管理</h1>
+    <p class="lead">
+      募集中・完了済みを含む全ての投稿の一覧です。テスト投稿など不要な投稿は「削除」で消せます（その投稿のチャット履歴も一緒に消えます）。完了済みの投稿を削除すると、実績カウンターは残った完了済み投稿から自動で再計算されます。
+    </p>
+    <div id="taskError" class="error-box"></div>
+    <div id="taskList"></div>
   </div>
 
 </div>
@@ -443,12 +451,18 @@ async function loadCoins() {
         <div class="sub" style="color: var(--text-muted); font-size: 0.8rem; word-break: break-all;">利用者キー: ${escapeHTML(c.userKey || '')}</div>
         <div class="sub" style="color: var(--text-muted); font-size: 0.8rem; word-break: break-all;">記録ID: ${escapeHTML(c.id || '')}</div>
         ${confirmControls}
+        <div class="actions">
+          <button class="btn btn-danger" data-coin-delete="${c.id}">🗑️ この記録を削除</button>
+        </div>
       </div>`;
     listEl.appendChild(card);
   });
 
   listEl.querySelectorAll("button[data-coin-confirm]").forEach(btn => {
     btn.addEventListener("click", () => confirmCoin(btn.getAttribute("data-coin-confirm")));
+  });
+  listEl.querySelectorAll("button[data-coin-delete]").forEach(btn => {
+    btn.addEventListener("click", () => deleteCoin(btn.getAttribute("data-coin-delete")));
   });
 }
 
@@ -518,8 +532,143 @@ async function loadDonations() {
         <div class="name" style="font-size: 1.05rem; font-weight: 800;">${escapeHTML(d.recipient || '')} — ${yen(d.amount)}</div>
         <div>寄付日: ${formatDate(d.donatedAt)}</div>
         ${note}
+        <div class="actions">
+          <button class="btn btn-danger" data-donation-delete="${escapeHTML(d.id || '')}">🗑️ この寄付記録を削除</button>
+        </div>
       </div>`;
     listEl.appendChild(card);
+  });
+
+  listEl.querySelectorAll("button[data-donation-delete]").forEach(btn => {
+    btn.addEventListener("click", () => deleteDonation(btn.getAttribute("data-donation-delete")));
+  });
+}
+
+// ======================================================
+// 削除・訂正（第10弾）: 投稿 / ワンコイン記録 / 寄付記録
+// すべて確認ダイアログを挟み、サーバー側で Blob とメモリから削除する
+// ======================================================
+async function deleteTask(taskId) {
+  if (!window.confirm("この投稿を削除しますか？\nその投稿のチャット履歴も一緒に消えます。元に戻せません。")) return;
+  const passcode = getPasscode();
+  const errEl = document.getElementById("taskError");
+  errEl.style.display = "none";
+  const res = await adminFetch(`/api/admin/tasks/${encodeURIComponent(taskId)}`, passcode, { method: "DELETE" });
+  if (!res) {
+    errEl.textContent = "サーバーに接続できず、削除できませんでした。";
+    errEl.style.display = "block";
+    return;
+  }
+  if (res.status === 403) {
+    errEl.textContent = "管理パスコードが違います。ログアウトして、もう一度入力してください。";
+    errEl.style.display = "block";
+    return;
+  }
+  if (!res.ok) {
+    errEl.textContent = "削除に失敗しました。もう一度お試しください。";
+    errEl.style.display = "block";
+    return;
+  }
+  loadAdminTasks();
+}
+
+async function deleteCoin(paymentId) {
+  if (!window.confirm("このワンコイン記録を削除しますか？\n誤って記録した分やテスト記録の掃除用です。元に戻せません。")) return;
+  const passcode = getPasscode();
+  const errEl = document.getElementById("coinError");
+  errEl.style.display = "none";
+  const res = await adminFetch(`/api/admin/coin-payments/${encodeURIComponent(paymentId)}`, passcode, { method: "DELETE" });
+  if (!res) {
+    errEl.textContent = "サーバーに接続できず、削除できませんでした。";
+    errEl.style.display = "block";
+    return;
+  }
+  if (res.status === 403) {
+    errEl.textContent = "管理パスコードが違います。ログアウトして、もう一度入力してください。";
+    errEl.style.display = "block";
+    return;
+  }
+  if (!res.ok) {
+    errEl.textContent = "削除に失敗しました。もう一度お試しください。";
+    errEl.style.display = "block";
+    return;
+  }
+  loadCoins();
+  loadDonations();
+}
+
+async function deleteDonation(donationId) {
+  if (!window.confirm("この寄付記録を削除しますか？\n寄付累計の表示も変わります。元に戻せません。")) return;
+  const passcode = getPasscode();
+  const errEl = document.getElementById("donationError");
+  errEl.style.display = "none";
+  const res = await adminFetch(`/api/admin/donations/${encodeURIComponent(donationId)}`, passcode, { method: "DELETE" });
+  if (!res) {
+    errEl.textContent = "サーバーに接続できず、削除できませんでした。";
+    errEl.style.display = "block";
+    return;
+  }
+  if (res.status === 403) {
+    errEl.textContent = "管理パスコードが違います。ログアウトして、もう一度入力してください。";
+    errEl.style.display = "block";
+    return;
+  }
+  if (!res.ok) {
+    errEl.textContent = "削除に失敗しました。もう一度お試しください。";
+    errEl.style.display = "block";
+    return;
+  }
+  loadDonations();
+}
+
+// 投稿（タスク）の一覧（第10弾で追加）。公開一覧は募集中だけのため、
+// 完了済みも含む管理用一覧から取得する
+async function loadAdminTasks() {
+  const passcode = getPasscode();
+  if (!passcode) return;
+  const listEl = document.getElementById("taskList");
+  const errEl = document.getElementById("taskError");
+  listEl.innerHTML = '<div class="empty">読み込み中...</div>';
+  errEl.style.display = "none";
+
+  const res = await adminFetch("/api/admin/tasks", passcode);
+  if (!res) {
+    listEl.innerHTML = '<div class="empty">サーバーに接続できませんでした。</div>';
+    return;
+  }
+  if (res.status === 403) {
+    errEl.textContent = "管理パスコードが違います。ログアウトして、もう一度入力してください。";
+    errEl.style.display = "block";
+    listEl.innerHTML = '';
+    return;
+  }
+  const list = await res.json().catch(() => null);
+  if (!Array.isArray(list) || list.length === 0) {
+    listEl.innerHTML = '<div class="empty">投稿はまだありません。</div>';
+    return;
+  }
+
+  listEl.innerHTML = "";
+  list.forEach(t => {
+    const card = document.createElement("div");
+    card.className = "card";
+    const status = t.status === 'completed' ? '<span class="badge">完了済み</span>' : '<span class="badge badge-pending">募集中</span>';
+    const helper = t.helperKey ? `<div>手伝う人: ${escapeHTML(t.helperName || '（名前なし）')} さん</div>` : "<div>手伝う人: 未確定</div>";
+    card.innerHTML = `
+      <div class="meta" style="font-size: 0.9rem; line-height: 1.7;">
+        <div class="name" style="font-size: 1.05rem; font-weight: 800;">${escapeHTML(t.title || '（タイトルなし）')} ${status}</div>
+        <div>投稿者: ${escapeHTML(t.requesterName || '（名前なし）')} 様 ／ 場所: ${escapeHTML(t.location || '')} ／ 日時: ${escapeHTML(t.date || '')} ${escapeHTML(t.time || '')}</div>
+        ${helper}
+        <div class="sub" style="color: var(--text-muted); font-size: 0.8rem; word-break: break-all;">投稿ID: ${escapeHTML(t.id || '')}</div>
+        <div class="actions">
+          <button class="btn btn-danger" data-task-delete="${escapeHTML(t.id || '')}">🗑️ この投稿を削除</button>
+        </div>
+      </div>`;
+    listEl.appendChild(card);
+  });
+
+  listEl.querySelectorAll("button[data-task-delete]").forEach(btn => {
+    btn.addEventListener("click", () => deleteTask(btn.getAttribute("data-task-delete")));
   });
 }
 
@@ -567,6 +716,7 @@ function showList() {
   loadRequests();
   loadCoins();
   loadDonations();
+  loadAdminTasks();
 }
 
 document.getElementById("btnLogin").addEventListener("click", async () => {
@@ -603,6 +753,7 @@ document.getElementById("btnReload").addEventListener("click", () => {
   loadRequests();
   loadCoins();
   loadDonations();
+  loadAdminTasks();
 });
 document.getElementById("btnRegisterDonation").addEventListener("click", registerDonation);
 try {

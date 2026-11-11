@@ -498,6 +498,28 @@ async function apiFetch(endpoint, options = {}) {
   return null;
 }
 
+// ステータスコードを判定したい場合用（第10弾）。apiFetch と同じ順序
+// （相対 → クラウド）で試すが、ok でなくても応答を返す。相対URLの応答は
+// 本物のAPI（JSON）のときだけ採用する（GitHub Pages の HTML 404 を
+// 本物の 404 と取り違えないため。admin.html の adminFetch と同じ方針）。
+async function apiFetchRaw(endpoint, options = {}) {
+  const isApiJson = (res) => {
+    try {
+      const ct = res && res.headers && typeof res.headers.get === "function" ? res.headers.get("content-type") : null;
+      return !!ct && ct.indexOf("json") !== -1;
+    } catch (e) { return false; }
+  };
+  try {
+    const res = await fetch(endpoint, options);
+    if (res && isApiJson(res)) return res;
+  } catch (err) {}
+  try {
+    const res = await fetch(BACKEND_CLOUD_API + endpoint, options);
+    if (res) return res;
+  } catch (err) {}
+  return null;
+}
+
 // 初期表示用の募集データは置きません（第2弾でデモデータを全て削除）。
 // 起動直後は0件が正しい状態で、「まだ投稿がありません」の空表示が出ます。
 const INITIAL_SAMPLE_TASKS = [];
@@ -627,6 +649,9 @@ async function createNewTask(taskData) {
     requesterName: lineUserProfile.displayName ? `${lineUserProfile.displayName}様` : "あなた (浜松市民・本人確認済み)",
     // 第7弾: 投稿者の利用者キーも持たせ、サーバー側レコードと形を揃える
     requesterKey: getMyUserKey(),
+    // 第10弾: 手伝う人の確定状態（サーバー側レコードと形を揃える）
+    helperKey: null,
+    helperName: "",
     requesterVerified: true,
     timeAgo: "たった今",
     status: "open",
@@ -702,11 +727,12 @@ async function completeTaskApi(taskId) {
 }
 
 // --- チャット履歴のローカル保存（APIが使えない環境でも会話が消えないように） ---
-const LOCAL_AUTO_REPLIES = [
-  "ご連絡ありがとうございます！お待ちしておりますね。",
-  "ありがとうございます！助かります。どうぞ気をつけてお越しください。",
-  "承知いたしました！お会いできるのを楽しみにしております。"
-];
+// 第10弾: ローカル動作時の「自動返信の再現」も廃止しました（サーバー側と
+// 同様、本物の相手の返事に見えて紛らわしいため）。APIが使えない場合は
+// 自分の送信分だけを端末に残します。
+// 第10弾: サーバーから 403 が返った（当事者でない）タスクを記録し、
+// チャット画面に「当事者だけが見られます」の案内を出すために使います。
+const chatForbiddenTaskIds = new Set();
 
 function getStoredChats() {
   try {
@@ -729,15 +755,27 @@ function chatTimeNow() {
 
 async function fetchChatMessages(taskId) {
   try {
-    const res = await apiFetch(`/api/chat/${taskId}`);
-    if (res) {
+    // 第10弾: チャットは当事者だけが読めるため、自分の利用者キーを付けて
+    // 取得する。403（当事者でない）は「接続できない」場合と区別して扱う
+    // 必要があるため、ステータスが取れる apiFetchRaw を使う。
+    const res = await apiFetchRaw(`/api/chat/${taskId}?userKey=${encodeURIComponent(getMyUserKey())}`);
+    if (res && res.status === 403) {
+      chatForbiddenTaskIds.add(taskId);
+      chatHistories[taskId] = [];
+      if (currentChatTaskId === taskId) {
+        renderChatMessages();
+      }
+      return;
+    }
+    if (res && res.ok) {
+      chatForbiddenTaskIds.delete(taskId);
       const serverMessages = await res.json();
       if (Array.isArray(serverMessages)) {
-        // 第7弾: サーバー履歴は全端末で共有される。メッセージの sender は
+        // 第7弾: サーバー履歴は当事者の端末で共有される。メッセージの sender は
         // 「送った端末から見た相対表記（me/them）」のため、そのままでは
         // 他人の発言が自分の吹き出しになってしまう。senderKey（送信者の
         // 利用者キー）があるメッセージは、自分のキーと比べて表示側を
-        // 決め直す（自動返信の system:auto-reply は常に相手側になる）。
+        // 決め直す（過去の自動返信 system:auto-reply は常に相手側になる）。
         const myKey = getMyUserKey();
         const normalized = serverMessages.map(m => {
           if (m && m.senderKey) {
@@ -757,6 +795,8 @@ async function fetchChatMessages(taskId) {
         return;
       }
     }
+    // res が 404（サーバーに無いタスク＝端末内だけの投稿）や接続不可の
+    // 場合は、下のローカル表示にフォールバックする
   } catch (err) {
     console.warn("⚠️ API fetchChatMessages error:", err);
   }
@@ -772,39 +812,38 @@ async function fetchChatMessages(taskId) {
 
 async function postChatMessage(taskId, text) {
   try {
-    const res = await apiFetch(`/api/chat/${taskId}`, {
+    // 第10弾: 送信も当事者だけに制限されるため、403 を区別できる
+    // apiFetchRaw を使う（userKey は body で送る。第7弾と同じ）
+    const res = await apiFetchRaw(`/api/chat/${taskId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       // 第7弾: 送信者の利用者キーと表示名も送り、受け取った側の端末で
       // 「誰の発言か」が分かるようにする
       body: JSON.stringify({ text: text, sender: "me", userKey: getMyUserKey(), displayName: getMyDisplayName() })
     });
-    if (res) {
-      // サーバー側の自動返信（約0.8秒後）を拾うため、少し待ってから再取得する
-      setTimeout(() => fetchChatMessages(taskId), 300);
-      setTimeout(() => fetchChatMessages(taskId), 1300);
+    if (res && res.ok) {
+      // 送信がサーバーに反映された状態で履歴を取り直す（第10弾で自動
+      // 返信は廃止したため、再取得は1回で十分。定期ポーリングもある）
+      setTimeout(() => fetchChatMessages(taskId), 400);
       return;
     }
+    if (res && res.status === 403) {
+      showToast("🔒 やり取りは当事者だけが使えます");
+      fetchChatMessages(taskId);
+      return;
+    }
+    // res が無い（接続不可）/ 404（サーバーに無いタスク）などは下の
+    // ローカル動作にフォールバックする
   } catch (err) {
     console.warn("⚠️ API postChatMessage error:", err);
   }
 
-  // APIが使えない場合のローカル動作: 自分のメッセージを保存し、
-  // サーバー接続時と同じ自動返信文で相手からの返信を再現する
+  // APIが使えない場合のローカル動作: 自分のメッセージだけを端末に残す
+  // （第10弾で、相手の返事を装う自動返信の再現は廃止した）
   if (!chatHistories[taskId]) chatHistories[taskId] = getStoredChats()[taskId] || [];
   chatHistories[taskId].push({ sender: "me", text: text, time: chatTimeNow(), _local: true });
   saveStoredChats();
   renderChatMessages();
-
-  setTimeout(() => {
-    if (!chatHistories[taskId]) chatHistories[taskId] = [];
-    const reply = LOCAL_AUTO_REPLIES[Math.floor(Math.random() * LOCAL_AUTO_REPLIES.length)];
-    chatHistories[taskId].push({ sender: "them", text: reply, time: chatTimeNow(), _local: true });
-    saveStoredChats();
-    if (currentChatTaskId === taskId) {
-      renderChatMessages();
-    }
-  }, 800);
 }
 
 // Initialize Application
@@ -1167,6 +1206,14 @@ function renderTasks() {
   filtered.forEach(task => {
     const card = document.createElement("div");
     card.className = "task-card";
+    // 第10弾: 手伝う人の確定状態をカードでも見分けられるようにする
+    const myKeyForBadge = getMyUserKey();
+    let helperBadge = "";
+    if (task.helperKey && task.helperKey === myKeyForBadge) {
+      helperBadge = `<div style="font-size: 0.8rem; font-weight: 800; color: var(--primary-hover); margin-top: 0.5rem;">🤝 あなたが手伝う人です</div>`;
+    } else if (task.helperKey) {
+      helperBadge = `<div style="font-size: 0.8rem; font-weight: 700; color: var(--text-muted); margin-top: 0.5rem;">🤝 手伝う人決定済み</div>`;
+    }
     card.innerHTML = `
       <div>
         <div class="task-card-header">
@@ -1191,6 +1238,7 @@ function renderTasks() {
             </div>
           </div>
         </div>
+        ${helperBadge}
       </div>
 
       <div class="task-card-footer">
@@ -1712,28 +1760,20 @@ window.openTaskDetails = function(taskId) {
       </div>
     </div>
 
-    <div id="modalActionArea">
-      <button class="btn-hero-action" style="width: 100%; background: var(--primary); color: white;" onclick="acceptTaskMatch('${task.id}')">
-        <i class="fa-solid fa-handshake-angle"></i> この困りごとを助ける（マッチング申請）
-      </button>
-    </div>
+    <div id="modalActionArea"></div>
   `;
 
+  // 第10弾: 自分の役割（投稿者 / 確定した手伝う人 / 第三者）に応じて
+  // アクションボタンと場所の開示範囲を切り替える
+  renderTaskDetailActions(task);
   openModal(taskDetailModal);
 };
 
-// Accept Task Match & Unlock Privacy Location & Enable Chat Button
-window.acceptTaskMatch = function(taskId) {
-  const task = tasksState.find(t => t.id === taskId);
-  if (!task) return;
-
-  const locationPrivacyBox = document.getElementById("locationPrivacyBox");
-  const modalActionArea = document.getElementById("modalActionArea");
-
-  locationPrivacyBox.style.background = "#d1fae5";
-  locationPrivacyBox.innerHTML = `
+// 場所ボックスを「正確な住所が開示された」表示にする共通部品
+function unlockedLocationHtml(task, heading) {
+  return `
     <div style="font-weight: 800; color: var(--primary-hover); font-size: 1rem; margin-bottom: 0.4rem;">
-      🎉 マッチング成立！詳細住所が開示されました
+      ${heading}
     </div>
     <div style="font-size: 1.1rem; font-weight: 900; color: #064e3b; background: white; padding: 0.75rem; border-radius: var(--radius-sm); border: 1px solid #6ee7b7;">
       🏡 正確な目的地: ${escapeHTML(task.exactLocation || '浜松市 登録住所')}
@@ -1742,19 +1782,167 @@ window.acceptTaskMatch = function(taskId) {
       <i class="fa-solid fa-shield-check"></i> 本人確認済み同士の安心マッチングです。下記のチャットボタンから連絡が可能です。
     </div>
   `;
+}
 
-  modalActionArea.innerHTML = `
+// 投稿詳細のアクション領域を、自分の役割に応じて描く（第10弾）
+// - 投稿者本人: チャットと完了ボタン（手伝う人の確定状況も表示）
+// - 確定した手伝う人: チャット・完了・辞退ボタン、正確な住所を開示
+// - 手伝う人が既に決まっている第三者: その旨の表示のみ（チャットは見せない）
+// - それ以外の第三者: 「手伝います」ボタン（claim API を呼ぶ）
+function renderTaskDetailActions(task) {
+  const modalActionArea = document.getElementById("modalActionArea");
+  if (!modalActionArea) return;
+  const locationPrivacyBox = document.getElementById("locationPrivacyBox");
+  const myKey = getMyUserKey();
+  const isMine = !!task.requesterKey && task.requesterKey === myKey;
+  const isHelper = !!task.helperKey && task.helperKey === myKey;
+
+  const chatButton = `
     <button class="btn-hero-action" style="width: 100%; background: var(--info); color: white; margin-bottom: 0.75rem;" onclick="openChatModal('${task.id}')">
-      <i class="fa-solid fa-comments"></i> 💬 依頼者とメッセージでチャットする
-    </button>
-
+      <i class="fa-solid fa-comments"></i> 💬 メッセージでチャットする
+    </button>`;
+  const completeButton = `
     <button class="btn-hero-action" style="width: 100%; background: var(--secondary); color: white;" onclick="completeTaskAndDonate('${task.id}')">
       <i class="fa-solid fa-circle-check"></i> 作業完了！500円を受け取り子ども食堂へ寄付
-    </button>
-  `;
+    </button>`;
 
-  showToast("🤝 マッチングが成立しました！チャット機能が解放されました。");
-  updateFamilyLog(`【安心通知】サポーターとのマッチングが完了し、チャットでの事前連絡が開始されました。`);
+  if (isMine) {
+    if (locationPrivacyBox) {
+      locationPrivacyBox.style.background = "#d1fae5";
+      locationPrivacyBox.innerHTML = unlockedLocationHtml(task, "📝 あなたの投稿です（正確な場所）");
+    }
+    const helperLine = task.helperKey
+      ? `<div style="font-size: 0.9rem; font-weight: 700; color: var(--primary-hover); margin-bottom: 0.75rem;">🤝 手伝う人: ${escapeHTML(task.helperName || 'サポーター')} さんが確定しています</div>`
+      : `<div style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 0.75rem;">手伝う人はまだ決まっていません。決まると、ここからやり取りができます。</div>`;
+    modalActionArea.innerHTML = helperLine + chatButton + completeButton;
+    return;
+  }
+
+  if (isHelper) {
+    if (locationPrivacyBox) {
+      locationPrivacyBox.style.background = "#d1fae5";
+      locationPrivacyBox.innerHTML = unlockedLocationHtml(task, "🎉 マッチング成立！詳細住所が開示されました");
+    }
+    modalActionArea.innerHTML = chatButton + completeButton + `
+      <button class="btn-hero-action" style="width: 100%; background: white; color: var(--text-muted); border: 1.5px solid var(--border);" onclick="releaseTaskHelper('${task.id}')">
+        手伝うのを辞退する
+      </button>`;
+    return;
+  }
+
+  if (task.helperKey) {
+    modalActionArea.innerHTML = `
+      <div style="background: var(--bg-main); border: 1.5px solid var(--border); padding: 1rem; border-radius: var(--radius-md); font-size: 0.9rem; color: var(--text-muted); line-height: 1.6;">
+        🤝 すでに手伝う人が決まっています（${escapeHTML(task.helperName || 'サポーター')} さん）。<br>
+        やり取りは当事者だけが見られます。
+      </div>`;
+    return;
+  }
+
+  modalActionArea.innerHTML = `
+    <button class="btn-hero-action" style="width: 100%; background: var(--primary); color: white;" onclick="acceptTaskMatch('${task.id}')">
+      <i class="fa-solid fa-handshake-angle"></i> この困りごとを助ける（手伝います）
+    </button>`;
+}
+
+// 「手伝います」の申し出: サーバーに手伝う人として確定してもらう（第10弾）
+// サーバーに届かない（接続不可・サーバーに無い端末内だけの投稿）場合は、
+// 従来どおり端末内だけでマッチング表示にして作業を止めない。
+window.acceptTaskMatch = async function(taskId) {
+  const task = tasksState.find(t => t.id === taskId);
+  if (!task) return;
+
+  const applyLocalMatch = () => {
+    task.helperKey = getMyUserKey();
+    task.helperName = getMyDisplayName();
+    saveStoredTasks(tasksState);
+    renderTasks();
+    renderTaskDetailActions(task);
+    showToast("🤝 マッチングが成立しました！チャット機能が解放されました。");
+    updateFamilyLog(`【安心通知】サポーターとのマッチングが完了し、チャットでの事前連絡が開始されました。`);
+  };
+
+  try {
+    const res = await apiFetchRaw(`/api/tasks/${taskId}/claim`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userKey: getMyUserKey(), displayName: getMyDisplayName() })
+    });
+    if (res && res.ok) {
+      const data = await res.json().catch(() => null);
+      if (data && data.task) {
+        Object.assign(task, data.task);
+        saveStoredTasks(tasksState);
+        renderTasks();
+      } else {
+        task.helperKey = getMyUserKey();
+        task.helperName = getMyDisplayName();
+      }
+      renderTaskDetailActions(task);
+      showToast("🤝 マッチングが成立しました！チャット機能が解放されました。");
+      updateFamilyLog(`【安心通知】サポーターとのマッチングが完了し、チャットでの事前連絡が開始されました。`);
+      return;
+    }
+    if (res && res.status === 409) {
+      showToast("🤝 すでに手伝う人が決まっています");
+      await fetchTasks();
+      openTaskDetails(taskId);
+      return;
+    }
+    if (res && res.status === 400) {
+      showToast("自分の投稿には申し出できません");
+      return;
+    }
+    applyLocalMatch();
+  } catch (err) {
+    console.warn("⚠️ API claim error:", err);
+    applyLocalMatch();
+  }
+};
+
+// 手伝う人の辞退: サーバーの確定を取り消す（第10弾）
+window.releaseTaskHelper = async function(taskId) {
+  const task = tasksState.find(t => t.id === taskId);
+  if (!task) return;
+
+  const applyLocalRelease = () => {
+    task.helperKey = null;
+    task.helperName = "";
+    saveStoredTasks(tasksState);
+    renderTasks();
+    showToast("手伝う人を辞退しました");
+    openTaskDetails(taskId);
+  };
+
+  try {
+    const res = await apiFetchRaw(`/api/tasks/${taskId}/release`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userKey: getMyUserKey() })
+    });
+    if (res && res.ok) {
+      const data = await res.json().catch(() => null);
+      if (data && data.task) {
+        Object.assign(task, data.task);
+        saveStoredTasks(tasksState);
+        renderTasks();
+      } else {
+        task.helperKey = null;
+        task.helperName = "";
+      }
+      showToast("手伝う人を辞退しました");
+      openTaskDetails(taskId);
+      return;
+    }
+    if (res && res.status === 403) {
+      showToast("取り消せるのは、確定した手伝う人だけです");
+      return;
+    }
+    applyLocalRelease();
+  } catch (err) {
+    console.warn("⚠️ API release error:", err);
+    applyLocalRelease();
+  }
 };
 
 // Open LINE-Style Chat Modal with Real-Time Polling
@@ -1763,8 +1951,11 @@ window.openChatModal = function(taskId) {
   if (!task) return;
 
   currentChatTaskId = taskId;
-  chatAvatar.textContent = (task.requesterName || "浜").substring(0, 1);
-  chatUserName.textContent = task.requesterName || "依頼者様";
+  // 第10弾: 自分が投稿者の場合は、相手（手伝う人）の名前を出す
+  const iAmRequester = !!task.requesterKey && task.requesterKey === getMyUserKey();
+  const counterpartName = (iAmRequester && task.helperName) ? (task.helperName + " さん（手伝う人）") : (task.requesterName || "依頼者様");
+  chatAvatar.textContent = (counterpartName || "浜").substring(0, 1);
+  chatUserName.textContent = counterpartName;
   chatContextTitle.textContent = `📌 依頼「${task.title}」のメッセージ`;
 
   fetchChatMessages(taskId);
@@ -1782,6 +1973,17 @@ window.openChatModal = function(taskId) {
 // Render Chat Messages Timeline
 function renderChatMessages() {
   if (!currentChatTaskId || !chatMessagesContainer) return;
+
+  // 第10弾: 当事者でないタスクでは、履歴の代わりに案内を出す
+  if (chatForbiddenTaskIds.has(currentChatTaskId)) {
+    chatMessagesContainer.innerHTML = `
+      <div style="text-align: center; color: var(--text-muted); font-size: 0.9rem; padding: 2rem 1rem; line-height: 1.7;">
+        🔒 やり取りは当事者だけが見られます。<br>
+        投稿した人と、手伝う人として確定した人だけがこの画面を開けます。
+      </div>
+    `;
+    return;
+  }
 
   const messages = chatHistories[currentChatTaskId] || [];
   chatMessagesContainer.innerHTML = "";
