@@ -28,6 +28,16 @@ let currentChatTaskId = null;
 let chatPollingTimer = null;
 let chatHistories = {};
 
+// 本人確認「確認待ち」の自動更新ポーリング（第12弾）
+// 間隔の根拠: サーバー側の読み込みキャッシュ（ハイドレーションTTL 15秒・
+// 第9弾）より短い間隔で問い合わせても、サーバーは最大で15秒前の状態しか
+// 返せないため無駄が多い。TTL を少し上回る20秒にすると、連続する問い合
+// わせはほぼ毎回サーバー側の再読み込み間隔を超え、新しい状態が返る。
+// 承認の反映に気づくまでの遅延は、概ね「間隔20秒＋TTLの残り最大15秒」
+// 程度が目安（あわせて第9弾の伝播遅延の項も参照）。
+const VERIFY_POLL_INTERVAL_MS = 20000;
+let verifyPollingTimer = null;
+
 // DOM Elements
 const tasksGrid = document.getElementById("tasksGrid");
 const categoryButtons = document.querySelectorAll(".cat-btn");
@@ -207,31 +217,92 @@ async function syncMyVerificationStatus() {
   try {
     const userKey = getMyUserKey();
     const res = await apiFetch("/api/verify-requests/mine?userKey=" + encodeURIComponent(userKey));
-    if (!res) return;
-    const data = await res.json();
-    const req = data && data.request;
-    if (!req) return;
-
-    userVerification.verifyStatus = req.status || "";
-    userVerification.verifyReason = req.reason || "";
-    if (req.docType) userVerification.docType = req.docType;
-    if (req.status === "approved") {
-      userVerification.requester = true;
-      userVerification.helper = true;
-    } else {
-      // 確認待ち・差し戻しの間は「認証済み」とは表示しない（正直な表示にする）
-      userVerification.requester = false;
-      userVerification.helper = false;
+    if (res) {
+      const data = await res.json();
+      const req = data && data.request;
+      if (req) {
+        userVerification.verifyStatus = req.status || "";
+        userVerification.verifyReason = req.reason || "";
+        if (req.docType) userVerification.docType = req.docType;
+        if (req.status === "approved") {
+          userVerification.requester = true;
+          userVerification.helper = true;
+        } else {
+          // 確認待ち・差し戻しの間は「認証済み」とは表示しない（正直な表示にする）
+          userVerification.requester = false;
+          userVerification.helper = false;
+        }
+        saveStoredVerification(userVerification);
+        updateVerificationBadgesUI();
+      }
     }
-    saveStoredVerification(userVerification);
-    updateVerificationBadgesUI();
   } catch (err) {
     console.warn("⚠️ verify-requests/mine sync error:", err);
   }
+  // 第12弾: 同期後の状態に合わせて自動更新ポーリングを開始/停止する
+  updateVerifyStatusPolling();
 }
+
+// ==========================================================================
+// 本人確認「確認待ち」の自動更新ポーリング（第12弾）
+// - 申請が「確認待ち（pending）」の間だけ状態を取り直し、運営の承認／
+//   差し戻しが、アプリを開いたままでもバッジに自動で反映されるようにする。
+// - 開始条件は「自分の申請が確認待ちであること」のみ。未申請・状態未取得
+//   の端末では一切動かず、確定（承認/差し戻し）したら停止する。
+// - 画面が非表示の間は停止し、前面に戻ったら即時に1回確認して再開する。
+// ==========================================================================
+function startVerifyStatusPolling() {
+  if (verifyPollingTimer) return;
+  if (userVerification.verifyStatus !== "pending") return;
+  verifyPollingTimer = setInterval(() => pollVerifyStatusNow(), VERIFY_POLL_INTERVAL_MS);
+}
+
+function stopVerifyStatusPolling() {
+  if (verifyPollingTimer) {
+    clearInterval(verifyPollingTimer);
+    verifyPollingTimer = null;
+  }
+}
+
+// 現在の状態に合わせてポーリングを開始/停止する（状態同期のたびに呼ばれる）
+function updateVerifyStatusPolling() {
+  if (userVerification.verifyStatus === "pending" && !document.hidden) {
+    startVerifyStatusPolling();
+  } else {
+    stopVerifyStatusPolling();
+  }
+}
+
+// ポーリング1回分: 状態を取り直し、確定への変化があれば利用者に知らせる
+async function pollVerifyStatusNow() {
+  const before = userVerification.verifyStatus;
+  await syncMyVerificationStatus();
+  const after = userVerification.verifyStatus;
+  if (before === "pending" && after === "approved") {
+    showToast("🎉 本人確認が承認されました！バッジが「認証済み」になりました。");
+  } else if (before === "pending" && after === "rejected") {
+    showToast("📨 本人確認の結果が届きました。「再提出のお願い」をご確認ください。");
+  }
+  if (after !== "pending") stopVerifyStatusPolling();
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    // バックグラウンドではポーリングを止める（電池・通信量の節約）
+    stopVerifyStatusPolling();
+  } else if (userVerification.verifyStatus === "pending") {
+    // 前面に戻ったら、その場で1回確認してからポーリングを再開する
+    pollVerifyStatusNow();
+    updateVerifyStatusPolling();
+  }
+});
 
 window.getMyUserKey = getMyUserKey;
 window.syncMyVerificationStatus = syncMyVerificationStatus;
+window.startVerifyStatusPolling = startVerifyStatusPolling;
+window.stopVerifyStatusPolling = stopVerifyStatusPolling;
+window.pollVerifyStatusNow = pollVerifyStatusNow;
+window.VERIFY_POLL_INTERVAL_MS = VERIFY_POLL_INTERVAL_MS;
 
 // ==========================================================================
 // ワンコイン寄付（第6弾）: 受け取り記録と寄付累計カウンター
@@ -871,7 +942,8 @@ document.addEventListener("DOMContentLoaded", () => {
   setInterval(() => {
     fetchTasks();
     fetchStats();
-    // 本人確認状態はポーリング対象にしない（自分のブラウザの保存状態が正のため）
+    // 本人確認状態はこの5秒ポーリングには含めない。確認待ちの間だけ動く
+    // 専用ポーリング（20秒・第12弾）で自動更新する（updateVerifyStatusPolling）
   }, 5000);
 });
 
@@ -1657,6 +1729,8 @@ function setupEventListeners() {
         userVerification.verifyReason = "";
         saveStoredVerification(userVerification);
         updateVerificationBadgesUI();
+        // 第12弾: 確認待ちになったので、承認/差し戻しの自動反映ポーリングを開始
+        updateVerifyStatusPolling();
 
         if (simResultTitle) simResultTitle.innerHTML = `<i class="fa-solid fa-paper-plane"></i> ${docName}の写真を送信しました`;
         if (simResultText) simResultText.textContent = `運営者が写真を確認します（マイナンバーカード等の写真かどうかを目視で確認します）。確認が終わるまでステータスは「確認待ち」です。結果はこの画面のバッジに自動で反映されます。`;

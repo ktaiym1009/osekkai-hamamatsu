@@ -166,7 +166,7 @@
       </div>
     </div>
     <p class="lead">
-      送られてきた写真が、マイナンバーカード等の身分証明書の写真かどうかを目視で確認し、「承認」または「差し戻し」をしてください。差し戻す場合は、利用者に表示される理由を入力してください。
+      送られてきた写真が、マイナンバーカード等の身分証明書の写真かどうかを目視で確認し、「承認」または「差し戻し」をしてください。差し戻す場合は、利用者に表示される理由を入力してください。不要になった申請は「この申請を削除」で消せます（写真も一緒に消えます）。承認済みの申請を消すと、その利用者は未認証に戻ります。
     </p>
     <div id="listError" class="error-box"></div>
     <div class="filters" id="statusFilters">
@@ -338,6 +338,9 @@ async function loadRequests() {
           <div class="sub">利用者キー: ${escapeHTML(req.userKey || '')}</div>
           <div class="sub">申請ID: ${escapeHTML(req.id || '')}</div>
           ${reviewControls}
+          <div class="actions">
+            <button class="btn btn-danger" data-verify-delete="${escapeHTML(req.id || '')}">🗑️ この申請を削除</button>
+          </div>
         </div>
       </div>`;
     listEl.appendChild(card);
@@ -345,6 +348,9 @@ async function loadRequests() {
 
   listEl.querySelectorAll("button[data-action]").forEach(btn => {
     btn.addEventListener("click", () => reviewRequest(btn.getAttribute("data-id"), btn.getAttribute("data-action")));
+  });
+  listEl.querySelectorAll("button[data-verify-delete]").forEach(btn => {
+    btn.addEventListener("click", () => deleteVerifyRequest(btn.getAttribute("data-verify-delete")));
   });
 }
 
@@ -546,8 +552,33 @@ async function loadDonations() {
 
 // ======================================================
 // 削除・訂正（第10弾）: 投稿 / ワンコイン記録 / 寄付記録
+// 削除・訂正（第11弾）: 本人確認の申請
 // すべて確認ダイアログを挟み、サーバー側で Blob とメモリから削除する
 // ======================================================
+async function deleteVerifyRequest(requestId) {
+  if (!window.confirm("この本人確認の申請を削除しますか？\n提出された写真も一緒に消えます。承認済みの申請を消すと、その利用者は未認証に戻ります。元に戻せません。")) return;
+  const passcode = getPasscode();
+  const errEl = document.getElementById("listError");
+  errEl.style.display = "none";
+  const res = await adminFetch(`/api/admin/verify-requests/${encodeURIComponent(requestId)}`, passcode, { method: "DELETE" });
+  if (!res) {
+    errEl.textContent = "サーバーに接続できず、削除できませんでした。";
+    errEl.style.display = "block";
+    return;
+  }
+  if (res.status === 403) {
+    errEl.textContent = "管理パスコードが違います。ログアウトして、もう一度入力してください。";
+    errEl.style.display = "block";
+    return;
+  }
+  if (!res.ok) {
+    errEl.textContent = "削除に失敗しました。もう一度お試しください。";
+    errEl.style.display = "block";
+    return;
+  }
+  loadRequests();
+}
+
 async function deleteTask(taskId) {
   if (!window.confirm("この投稿を削除しますか？\nその投稿のチャット履歴も一緒に消えます。元に戻せません。")) return;
   const passcode = getPasscode();

@@ -1549,6 +1549,106 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // 12.5 DELETE /api/admin/verify-requests/:id （第11弾: 運営者: 本人確認申請の削除。パスコード必須）
+  // 不要になった申請（テスト申請・確認が済んで保管不要になった申請など）の
+  // 掃除用です。申請レコードと、Blob に保存した写真・メタデータを削除します。
+  // 削除の意味論は第10弾の運営削除と同じです:
+  //   - 先に Blob を削除し、失敗したら 500 でメモリは一切変更しません。
+  //   - 削除した申請は Blob にもメモリにも残らないため、再起動後の復元
+  //     （ハイドレーション）で復活することはありません。
+  // 認証状態の扱い: 利用者の認証状態は「その利用者の最新申請の status」
+  // から導出されます（GET /api/verify-requests/mine）。そのため申請を
+  // 消せば導出結果は自動で追随します。既存の userVerifications（バッジ
+  // 表示用・全体で1つ）については、確認API（#12）の差し戻し時と同じ
+  // 考え方で、削除した申請がその利用者の最新だった場合だけ、残った
+  // 最新申請から再導出して整合させます（最新でない申請の削除では、
+  // 現在の認証状態は変わらないため触れません）。
+  if (pathname.startsWith('/api/admin/verify-requests/') && req.method === 'DELETE') {
+    if (!hasAdminPasscode(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=UTF-8' });
+      res.end(JSON.stringify({ error: "admin passcode required" }));
+      return;
+    }
+    const requestId = pathname.split('/')[4];
+    try {
+      const db = loadDB();
+      await hydrateVerifyRequestsFromBlob(db);
+      let target = (db.verificationRequests || []).find(r => r.id === requestId);
+      if (!target) {
+        // 第9弾: 別インスタンスが書いた申請が TTL 内でまだ取り込まれて
+        // いない可能性があるため、見つからない場合だけ強制再読み込み
+        // してもう一度探す（本当に存在しない申請はそのまま 404）。
+        await hydrateVerifyRequestsFromBlob(db, { force: true });
+        target = (db.verificationRequests || []).find(r => r.id === requestId);
+      }
+      if (!target) {
+        res.writeHead(404, { 'Content-Type': 'application/json; charset=UTF-8' });
+        res.end(JSON.stringify({ error: "request not found" }));
+        return;
+      }
+      // 削除対象が、その利用者の最新申請かどうか（認証状態の再導出が要るか）
+      const latestBefore = findLatestVerifyRequest(db, target.userKey);
+      const wasLatest = !!(latestBefore && latestBefore.id === target.id);
+
+      const blob = loadBlobClient();
+      if (blob) {
+        try {
+          // verify-requests/<申請ID>/ 配下（写真バイナリと meta.json）を
+          // まとめて削除する。レコードに残っているパス名も合算し、
+          // list の反映遅延で写真だけ取りこぼすことがないようにする。
+          const pathnames = new Set();
+          if (target.photoBlobPathname) pathnames.add(target.photoBlobPathname);
+          if (target.photoMetaBlobPathname) pathnames.add(target.photoMetaBlobPathname);
+          const prefix = VERIFY_BLOB_PREFIX + target.id + '/';
+          let cursor = undefined;
+          do {
+            const listed = await blob.list({
+              prefix: prefix,
+              limit: 1000,
+              cursor: cursor,
+              token: process.env.BLOB_READ_WRITE_TOKEN
+            });
+            for (const b of (listed.blobs || [])) {
+              if (b.pathname) pathnames.add(b.pathname);
+            }
+            cursor = listed.hasMore ? listed.cursor : undefined;
+          } while (cursor);
+          if (pathnames.size > 0) {
+            await blob.del([...pathnames], { token: process.env.BLOB_READ_WRITE_TOKEN });
+          }
+        } catch (err) {
+          console.error('⚠️ Blob からの本人確認申請の削除に失敗しました:', err.message);
+          res.writeHead(500, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "failed to delete verify request" }));
+          return;
+        }
+      }
+
+      db.verificationRequests = (db.verificationRequests || []).filter(r => r.id !== requestId);
+
+      // 認証状態の整合（上記コメント参照）: 削除した申請が利用者の最新
+      // だった場合だけ、残った最新申請から userVerifications を再導出する。
+      // 承認済みの最新申請を消した場合は未認証に戻り、過去の承認済み申請が
+      // 残っていればその認証が引き続き有効になります。
+      if (wasLatest) {
+        const remaining = findLatestVerifyRequest(db, target.userKey);
+        db.userVerifications = db.userVerifications || {};
+        if (remaining && remaining.status === 'approved') {
+          db.userVerifications.defaultUser = { requester: true, helper: true, verifiedAt: remaining.reviewedAt };
+        } else {
+          db.userVerifications.defaultUser = { requester: false, helper: false, verifiedAt: undefined };
+        }
+      }
+      saveDB(db);
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=UTF-8' });
+      res.end(JSON.stringify({ success: true }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=UTF-8' });
+      res.end(JSON.stringify({ error: "Internal Server Error" }));
+    }
+    return;
+  }
+
   // === ワンコイン寄付（第6弾） ===
   // 助け合いのお礼500円の流れを記録します:
   //   利用者（手伝った人）が受け取りを記録（status: 'held' = 預かり中）
