@@ -181,6 +181,50 @@ function getMyDisplayName() {
   return "";
 }
 
+// --- 第14弾: 本人確認は LINE 連携済みを前提にする ---
+// LINE 内ブラウザと Chrome では保存領域が分かれている（別の入れ物）ため、
+// 端末キーで申請すると、後から LINE で開いたときに同じ人の申請として
+// 見つけられず「Chromeでは認証済みなのに LINE では未承認」という事故が
+// 起きました。本人確認は、自分の鍵が LINE アカウント（line: 形式）に
+// なる状態でのみ進められるようにします。サーバー側でも端末キー等の
+// 新規申請は 400 で断ります（local_server.js の isLineUserKey）。
+function isLineLinkedForVerify() {
+  return !!(lineUserProfile && lineUserProfile.isLoggedIn && lineUserProfile.userId);
+}
+
+// 連携のために LINE の画面へ移動する前に付けておく「連携が終わったら
+// 本人確認に戻る」印。戻ってきたとき（LIFF 初期化でプロフィールが
+// 反映されたとき）に、本人確認モーダルを開き直して続けられるようにする。
+const VERIFY_LINK_PENDING_KEY = "osekkai_v2_verify_link_pending";
+
+function markVerifyLinkPending() {
+  try { sessionStorage.setItem(VERIFY_LINK_PENDING_KEY, "1"); } catch (e) {}
+}
+
+function consumeVerifyLinkPending() {
+  try {
+    const v = sessionStorage.getItem(VERIFY_LINK_PENDING_KEY);
+    if (v) sessionStorage.removeItem(VERIFY_LINK_PENDING_KEY);
+    return !!v;
+  } catch (e) { return false; }
+}
+
+// 本人確認モーダル内の「LINE 連携が必要です」案内の表示を、連携状態に合わせる
+function updateVerifyLinkGateUI() {
+  const guide = document.getElementById("verifyLineLinkGuide");
+  if (guide) guide.style.display = isLineLinkedForVerify() ? "none" : "block";
+}
+
+// 本人確認に戻る印が付いていれば、本人確認モーダルを開き直す（連携完了後の続行用）
+function reopenVerifyModalIfPending() {
+  if (!consumeVerifyLinkPending()) return;
+  if (typeof window.resetVerifyModalUI === "function") window.resetVerifyModalUI();
+  openModal(verifyModal);
+}
+
+window.isLineLinkedForVerify = isLineLinkedForVerify;
+window.updateVerifyLinkGateUI = updateVerifyLinkGateUI;
+
 // 写真を送信前に縮小する（最大幅800px目安・JPEG化）。写真そのものが写って
 // いるか運営者が目視で判断できれば十分なため、容量を抑えて送信します。
 function shrinkImageToJpeg(dataUrl, maxWidth = 800) {
@@ -973,6 +1017,8 @@ async function applyLineProfile() {
   lineUserProfile.userId = profile.userId;
   lineUserProfile.isLoggedIn = true;
   updateLineStatusUI();
+  // 第14弾: 連携が成立したので、本人確認モーダルの連携案内は隠す
+  updateVerifyLinkGateUI();
   return profile;
 }
 
@@ -1013,6 +1059,9 @@ function initLineLiff() {
       // ログイン済み（LINEアプリ内、またはログイン後に戻ってきた状態）
       applyLineProfile().then(profile => {
         showToast(`💬 LINEアカウント（${profile.displayName}様）でログイン中`);
+        // 第14弾: 本人確認の途中で連携するために移動し、戻ってきた場合は
+        // 本人確認モーダルを開き直して、そのまま続けられるようにする
+        reopenVerifyModalIfPending();
       }).catch(err => {
         console.warn("LINE Profile fetch error:", err);
       });
@@ -1213,6 +1262,8 @@ function triggerLiffLoginAction() {
       applyLineProfile().then(profile => {
         showToast(`🎉 LINEアカウント「${profile.displayName}様」と連携が完了しました！`);
         closeLineAccountModal();
+        // 第14弾: 本人確認から連携しに来た場合は、本人確認へ戻す
+        reopenVerifyModalIfPending();
       }).catch(err => {
         console.warn("LINE Profile fetch error:", err);
         showToast("⚠️ LINEプロフィールの取得に失敗しました。もう一度お試しください。");
@@ -1384,6 +1435,15 @@ function setupEventListeners() {
     resetVerifyModalUI();
     openModal(verifyModal);
   });
+  // 第14弾: 本人確認モーダル内の「LINE連携する」ボタン。連携のために移動する
+  // 前に「本人確認に戻る」印を付け、既存の連携フロー（LIFF ログイン）を開始する
+  const btnVerifyLineLink = document.getElementById("btnVerifyLineLink");
+  if (btnVerifyLineLink) {
+    btnVerifyLineLink.addEventListener("click", () => {
+      markVerifyLinkPending();
+      triggerLiffLoginAction();
+    });
+  }
   if (openNpoModalBtn) openNpoModalBtn.addEventListener("click", () => openModal(npoModal));
   const linkNpoPlatform = document.getElementById("linkNpoPlatform");
   if (linkNpoPlatform) {
@@ -1518,6 +1578,9 @@ function setupEventListeners() {
   window.resetVerifyModalUI = function() {
     const simResult = document.getElementById("verificationSimResult");
     if (simResult) simResult.style.display = "none";
+
+    // 第14弾: 開くたびに連携状態に合わせて「LINE 連携が必要です」案内を出し直す
+    updateVerifyLinkGateUI();
 
     // 認証実行ボタンを初期状態に戻す（認証完了時に非表示にしたままにしない）
     const ekycBtn = document.getElementById("btnSubmitEkyc");
@@ -1693,6 +1756,35 @@ function setupEventListeners() {
         return;
       }
 
+      // 第14弾: 本人確認は LINE 連携済みが前提。撮影開始時点でも止めているが、
+      // 送信直前にも再確認し、未連携なら送らない（端末キーの申請はサーバー
+      // でも 400 で断られる）。
+      if (!isLineLinkedForVerify()) {
+        updateVerifyLinkGateUI();
+        const guideEl = document.getElementById("verifyLineLinkGuide");
+        if (guideEl && guideEl.scrollIntoView) guideEl.scrollIntoView({ behavior: "smooth", block: "center" });
+        showToast("ℹ️ 本人確認には LINE 連携が必要です。LINE連携を済ませてから申請してください。");
+        return;
+      }
+
+      // 第14弾（第13弾の名前表示を実際に機能させるための担保）: 連携済みでも
+      // 表示名がまだ読み込めていない場合は、プロフィールを再取得してから
+      // 送る。再取得しても名前が取れない場合は送信を止める（そのまま送ると
+      // 運営画面で「名前なしさん」になり、誰の申請か見分けられなくなる）。
+      if (!getMyDisplayName()) {
+        try {
+          if (typeof liff !== "undefined" && liffReady && liff.isLoggedIn()) {
+            await applyLineProfile();
+          }
+        } catch (e) {
+          console.warn("LINE profile refetch error:", e);
+        }
+        if (!getMyDisplayName()) {
+          showToast("ℹ️ LINEプロフィールを取得しています。数秒待ってから、もう一度ボタンを押してください。");
+          return;
+        }
+      }
+
       const defaultBtnHtml = `<i class="fa-solid fa-cloud-arrow-up"></i> ${docName}で身元確認（eKYC認証実行）`;
       btnSubmitEkyc.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> 写真を送信しています...`;
       btnSubmitEkyc.style.pointerEvents = "none";
@@ -1702,10 +1794,15 @@ function setupEventListeners() {
       const simResultText = document.getElementById("simResultText");
 
       // --- サーバーへ写真を送信する（運営者の目視確認を受ける） ---
+      // 第14弾: 「サーバーが明示的に断った（400等）」場合と「サーバーへ届か
+      // なかった」場合を区別するため、ステータスが取れる apiFetchRaw を使う
+      // （第10弾と同じ方針）。断られたのに端末内だけで「認証完了」にして
+      // しまう事故を防ぐためです。
       let submitted = false;
+      let serverRejectMessage = "";
       try {
         const photoForReview = await shrinkImageToJpeg(frontImageData, 800);
-        const res = await apiFetch("/api/verify-requests", {
+        const res = await apiFetchRaw("/api/verify-requests", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1715,9 +1812,29 @@ function setupEventListeners() {
             photoDataUrl: photoForReview
           })
         });
-        if (res) submitted = true;
+        if (res && res.ok) {
+          submitted = true;
+        } else if (res) {
+          try {
+            const j = await res.json();
+            serverRejectMessage = (j && (j.message || j.error)) || "";
+          } catch (e) {}
+          if (!serverRejectMessage) serverRejectMessage = "サーバーが申請を受け付けませんでした。時間をおいてもう一度お試しください。";
+        }
       } catch (e) {
         console.warn("⚠️ verify-request submit error:", e);
+      }
+
+      if (!submitted && serverRejectMessage) {
+        // サーバーに明示的に断られた: 端末内フォールバック（認証完了扱い）には
+        // 進まず、理由を利用者に表示する。写真は保持されるので直して再送できる
+        if (simResultTitle) simResultTitle.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i> 申請できませんでした`;
+        if (simResultText) simResultText.textContent = serverRejectMessage;
+        if (simResult) simResult.style.display = "block";
+        btnSubmitEkyc.style.pointerEvents = "auto";
+        btnSubmitEkyc.innerHTML = defaultBtnHtml;
+        showToast("⚠️ " + serverRejectMessage);
+        return;
       }
 
       if (submitted) {
@@ -2162,6 +2279,16 @@ function hideCameraError() {
 //   端末のカメラアプリが起動する。非同期の後から input.click() を呼ぶ方式は
 //   ブラウザにブロックされて「何も起きない」ことがあるため避ける。
 function handleCaptureRequest(target, fallbackFileInput) {
+  // 第14弾: 本人確認は LINE 連携済みが前提。未連携の間は、ページ内カメラにも
+  // カメラアプリ／ファイル選択にも進めず、連携の案内を出す（連携して戻って
+  // くれば、そのまま撮影を続けられる）。
+  if (!isLineLinkedForVerify()) {
+    updateVerifyLinkGateUI();
+    const guide = document.getElementById("verifyLineLinkGuide");
+    if (guide && guide.scrollIntoView) guide.scrollIntoView({ behavior: "smooth", block: "center" });
+    showToast("ℹ️ 本人確認には LINE 連携が必要です。まず「LINE連携する」ボタンから連携してください。");
+    return;
+  }
   activeCaptureTarget = target === "back" ? "back" : "front";
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     showToast("ℹ️ このブラウザではページ内カメラが使えないため、カメラアプリ／写真選択を開きます");

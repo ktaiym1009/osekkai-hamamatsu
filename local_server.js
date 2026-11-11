@@ -150,6 +150,27 @@ function verifyMetaOf(record) {
   return meta;
 }
 
+// 申請者の表示名の検証（第13弾）。文字列のみを受け付け、前後の空白を除去し、
+// 最大50文字に切り詰めます。空文字・未送信・文字列でない値は ''（名前なし）
+// として扱います。名前は運営者確認画面での見分け専用で、利用者向けAPIには
+// 一切含めません（publicVerifyRequest を参照）。
+function sanitizeVerifyDisplayName(value) {
+  if (typeof value !== 'string') return '';
+  return value.trim().slice(0, 50);
+}
+
+// 本人確認の新規申請に使える利用者キーかどうか（第14弾）。
+// 利用者キーの生成はクライアント（app.js の getMyUserKey）が一元的に行い、
+// LINE 連携済みなら "line:<LINEユーザーID>"、未連携なら
+// "device:<端末ID>"（保存に失敗した場合は "device:ephemeral"）を返します。
+// 本人確認は LINE アカウントに結び付けることが前提のため、新規申請では
+// line: 形式で ID 部分が空でないキーだけを受け付けます。
+// この判定は申請POSTの入口でのみ使い、既存レコードの読み取り・承認・
+// 削除には一切影響させません。
+function isLineUserKey(userKey) {
+  return typeof userKey === 'string' && userKey.startsWith('line:') && userKey.length > 'line:'.length;
+}
+
 async function putVerifyMetaToBlob(record) {
   const blob = loadBlobClient();
   if (!blob) throw new Error('blob storage is not available');
@@ -1301,12 +1322,14 @@ const server = http.createServer(async (req, res) => {
   // === 本人確認の写真申請・目視確認（第3弾） ===
   // 写真データ（photoDataUrl）は運営者用の一覧APIでのみ返します。
   // 利用者向けAPIでは絶対に含めません（自分の写真でも同じです）。
+  // 申請者の表示名（displayName）も第13弾から同じ扱いにし、運営者用の
+  // 一覧API（パスコード必須）でのみ返します。利用者向けの応答には、
+  // 本人の申請であっても名前を含めません。
   function publicVerifyRequest(r) {
     if (!r) return null;
     return {
       id: r.id,
       userKey: r.userKey,
-      displayName: r.displayName,
       docType: r.docType,
       status: r.status,
       reason: r.reason || '',
@@ -1348,6 +1371,20 @@ const server = http.createServer(async (req, res) => {
           res.end(JSON.stringify({ error: "userKey is required" }));
           return;
         }
+        // 第14弾: 本人確認の新規申請は、LINE 連携済み（line: 形式のキー）の
+        // 利用者だけが送れます。端末キー等の申請を受け付けてしまうと、その
+        // 承認が LINE アカウント側の申請として見つけられず、「Chromeでは
+        // 認証済みなのに LINE から開くと未承認」という事故になるため、
+        // 理由が分かるメッセージ付きで 400 で断ります。既存レコードの
+        // 読み取り・承認・削除はこの制限の対象外です。
+        if (!isLineUserKey(userKey)) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({
+            error: 'line_required',
+            message: '本人確認の申請にはLINE連携が必要です。LINE連携を済ませてから、もう一度申請してください。'
+          }));
+          return;
+        }
         // 写真は必須。データURL形式の画像で、容量上限（約3MB相当）以内のみ受付
         if (!photo || !photo.startsWith('data:image/') || photo.length > 3000000) {
           res.writeHead(400, { 'Content-Type': 'application/json; charset=UTF-8' });
@@ -1359,7 +1396,7 @@ const server = http.createServer(async (req, res) => {
         const request = {
           id: "vreq-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
           userKey: userKey,
-          displayName: String(data.displayName || '').trim().slice(0, 100),
+          displayName: sanitizeVerifyDisplayName(data.displayName),
           docType: (data.docType === 'license') ? 'license' : 'mynumber',
           photoDataUrl: photo,
           status: 'pending',

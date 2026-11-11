@@ -382,6 +382,20 @@
         安心・安全な助け合いのため、マイナンバーカードや運転免許証による相互身元認証を行っております。撮影した【表面】の写真は運営者へ送信され、マイナンバーカード等の写真かどうかを運営者が目視で確認します。送信後は「確認待ち」となり、確認が終わるとバッジに結果が反映されます。（※写真は本人確認目的以外には使用されません）
       </p>
 
+      <!-- 第14弾: 本人確認は LINE 連携済みが前提。未連携の間だけこの案内を表示する
+           （表示切替は app.js の updateVerifyLinkGateUI が行う） -->
+      <div id="verifyLineLinkGuide" style="display: none; background: #f0fdf4; border: 1.5px solid #06c755; border-radius: var(--radius-md); padding: 1rem 1.25rem; margin-bottom: 1.25rem; text-align: center;">
+        <div style="font-weight: 800; color: #166534; margin-bottom: 0.4rem;">
+          <i class="fa-brands fa-line"></i> 本人確認には LINE 連携が必要です
+        </div>
+        <div style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.6; margin-bottom: 0.75rem;">
+          本人確認は、あなたご本人の LINE アカウントと結び付けて行います。先に LINE 連携を済ませてください。連携が終わると、この画面に戻ってそのまま撮影を続けられます。
+        </div>
+        <button type="button" class="btn-hero-action" id="btnVerifyLineLink" style="background: #06c755; color: white; border: none; font-weight: 800; cursor: pointer;">
+          <i class="fa-brands fa-line"></i> LINE連携する
+        </button>
+      </div>
+
       <div class="form-group">
         <label class="form-label"><i class="fa-solid fa-file-contract" style="color: var(--primary);"></i> 提出する公的身分証明書を選択</label>
         <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.75rem;">

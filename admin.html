@@ -320,6 +320,8 @@ async function loadRequests() {
     card.className = "card";
     const reviewed = req.reviewedAt ? `<div class="sub">確認日時: ${formatDate(req.reviewedAt)}</div>` : "";
     const reason = req.reason ? `<div>差し戻し理由: ${escapeHTML(req.reason)}</div>` : "";
+    // 第13弾: 申請者の名前をはっきり表示する（名前がない申請は「名前なしさん」）
+    const applicantLabel = req.displayName ? `申請者：${escapeHTML(req.displayName)} さん` : '申請者：名前なしさん';
     const reviewControls = req.status === 'pending' ? `
       <input type="text" class="reason-input" id="reason-${req.id}" placeholder="差し戻しの理由（例: 写真がぼやけて文字が読めません）">
       <div class="actions">
@@ -330,7 +332,7 @@ async function loadRequests() {
       <div class="req">
         <img class="photo" src="${escapeHTML(req.photoDataUrl || '')}" alt="提出された本人確認写真">
         <div class="meta">
-          <div class="name">${escapeHTML(req.displayName || '（名前なし）')} 様</div>
+          <div class="name">${applicantLabel}</div>
           <div>${docTypeName(req.docType)} ／ ${statusBadge(req.status)}</div>
           <div>申請日時: ${formatDate(req.createdAt)}</div>
           ${reason}
