@@ -1019,6 +1019,13 @@ async function applyLineProfile() {
   updateLineStatusUI();
   // 第14弾: 連携が成立したので、本人確認モーダルの連携案内は隠す
   updateVerifyLinkGateUI();
+  // 第16弾: プロフィールが反映されたら、LINE の鍵で自分の申請状態を
+  // 取り直す。起動直後の同期（fetchUserVerification）は LIFF 初期化より
+  // 先に走るため、その時点では端末キーで問い合わせてしまい、サーバーに
+  // 承認済みの申請があっても「未認証」のままになっていた（実地症状）。
+  // プロフィール反映の共通経路であるここで再同期すれば、自動初期化・
+  // 手動ログインのどちらの経路でも LINE の鍵で問い直せる。
+  await syncMyVerificationStatus();
   return profile;
 }
 
