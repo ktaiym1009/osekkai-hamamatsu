@@ -411,6 +411,55 @@ async function persistTaskUpdate(task, updated) {
   Object.assign(task, updated);
 }
 
+// タスク本体とそのタスクのチャットを、Blob とメモリの両方から削除する
+// （第17弾で共通化。管理者削除＝第10弾 4.8 と、投稿者本人の削除＝第17弾
+// 4.65 が同じ中身を使う）。
+// 統計の扱いは管理者削除の判断（第10弾）をそのまま踏襲します: 削除後は
+// 「残った完了済みタスクからの再導出」を正として統計を再計算し、保存
+// します。第8弾の復元フォールバック（保存値と導出値の大きい方）は
+// 「事故からの自動修復」のための仕組みで、意図的な削除には適用しません
+// （適用すると、消したはずの完了分が数字だけ復活してしまいます）。
+// 保存の順序: 先に再計算後の統計を Blob へ保存し、次にチャットとタスクの
+// Blob を削除し、最後にメモリへ反映します。Blob 操作が失敗したら例外を
+// 投げ、メモリは一切変えません（呼び出し側は 500 を返します）。
+async function deleteTaskWithChats(db, task) {
+  const remaining = (db.tasks || []).filter(t => t.id !== task.id);
+  const derived = deriveStatsFromTasks({ tasks: remaining });
+  const newStats = {
+    ...db.npoStats,
+    totalMealsServed: derived.totalMealsServed,
+    totalDonationYen: derived.totalDonationYen
+  };
+  const blob = loadBlobClient();
+  if (blob) {
+    await putStatsToBlob(newStats);
+    // チャットメッセージの Blob を削除する
+    const msgPrefix = CHAT_BLOB_PREFIX + task.id + '/';
+    const pathnames = [];
+    let cursor = undefined;
+    do {
+      const listed = await blob.list({
+        prefix: msgPrefix,
+        limit: 1000,
+        cursor: cursor,
+        token: process.env.BLOB_READ_WRITE_TOKEN
+      });
+      for (const b of (listed.blobs || [])) {
+        if (b.pathname) pathnames.push(b.pathname);
+      }
+      cursor = listed.hasMore ? listed.cursor : undefined;
+    } while (cursor);
+    if (pathnames.length > 0) {
+      await blob.del(pathnames, { token: process.env.BLOB_READ_WRITE_TOKEN });
+    }
+    await blob.del(task.blobPathname || taskBlobPathname(task.id), { token: process.env.BLOB_READ_WRITE_TOKEN });
+  }
+  db.tasks = remaining;
+  if (db.chatStore) delete db.chatStore[task.id];
+  db.npoStats = newStats;
+  return newStats;
+}
+
 // タスクの並び順キー（新しい順）。createdAt が無い旧レコードは、ID に
 // 埋め込まれた作成時刻（task-<ミリ秒>-...）で代用する。
 function taskSortKey(t) {
@@ -1062,6 +1111,78 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // 4.65 POST /api/tasks/:id/delete （第17弾: 投稿者本人による投稿の削除）
+  // 投稿者本人が、自分の投稿を取り下げられるようにします。これまで削除は
+  // 運営者の管理削除（4.8）しか無く、共有化より前に端末内だけで作った
+  // テスト投稿などが本人の画面に残り続けていました。
+  // 所有権の検証: body の userKey が、そのタスクの requesterKey と一致する
+  // 場合だけ削除します。不一致は 403、タスクが無い場合は 404、userKey が
+  // 無い場合は 400 です。requesterKey が null の旧タスク（第7弾より前）は
+  // 所有者を証明できないため 403 とし、削除は運営者の管理削除に委ねます。
+  // 正直な限界: userKey はクライアント申告制（第10弾のチャット制限と同じ）
+  // で、強い本人認証ではありません。他人のキーを知れば成りすませてしまい
+  // ますが、「誰でも消せる」状態にはせず、サーバー側で必ず照合します。
+  // 削除の中身（タスク本体＋そのタスクのチャットを Blob / メモリから消し、
+  // 統計を残ったタスクから再導出する）は管理者削除と共通の
+  // deleteTaskWithChats を使います。募集中の投稿はもともと統計に数え
+  // られていないため、通常この再計算で数字は変わりません。
+  if (pathname.startsWith('/api/tasks/') && pathname.endsWith('/delete') && req.method === 'POST') {
+    const taskId = pathname.split('/')[3];
+    let body = '';
+    req.on('data', chunk => { body += chunk.toString(); });
+    req.on('end', async () => {
+      let data;
+      try {
+        data = JSON.parse(body);
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=UTF-8' });
+        res.end(JSON.stringify({ error: "Invalid JSON" }));
+        return;
+      }
+      try {
+        const userKey = String(data.userKey || '').trim().slice(0, 128);
+        if (!userKey) {
+          res.writeHead(400, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "userKey is required" }));
+          return;
+        }
+        const db = loadDB();
+        await hydrateTasksFromBlob(db);
+        await hydrateChatMessagesFromBlob(db);
+        // 統計のうち導出できない2項目（supportedCafeterias 等）を古い
+        // メモリ値で潰さないよう、再計算の前に統計も最新化しておく
+        // （管理者削除と同じ順序）
+        await hydrateStatsFromBlob(db, { force: true });
+        const task = await findTaskWithReload(db, taskId);
+        if (!task) {
+          res.writeHead(404, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "task not found" }));
+          return;
+        }
+        if (!task.requesterKey || task.requesterKey !== userKey) {
+          res.writeHead(403, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "only the requester can delete this task" }));
+          return;
+        }
+        try {
+          await deleteTaskWithChats(db, task);
+        } catch (err) {
+          console.error('⚠️ Blob からの投稿削除に失敗しました:', err.message);
+          res.writeHead(500, { 'Content-Type': 'application/json; charset=UTF-8' });
+          res.end(JSON.stringify({ error: "failed to delete task" }));
+          return;
+        }
+        saveDB(db);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=UTF-8' });
+        res.end(JSON.stringify({ success: true }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=UTF-8' });
+        res.end(JSON.stringify({ error: "Internal Server Error" }));
+      }
+    });
+    return;
+  }
+
   // 4.7 GET /api/admin/tasks （第10弾: 運営者: 投稿の一覧。パスコード必須）
   // 公開の一覧APIは募集中（open）のみ返すため、完了済みを含む全件を
   // 運営画面（削除・訂正用）に返す専用の一覧を用意します。
@@ -1112,48 +1233,18 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: "task not found" }));
         return;
       }
-      // 削除後の統計（導出できる2項目のみ再計算。他の2項目は対象外）
-      const remaining = (db.tasks || []).filter(t => t.id !== taskId);
-      const derived = deriveStatsFromTasks({ tasks: remaining });
-      const newStats = {
-        ...db.npoStats,
-        totalMealsServed: derived.totalMealsServed,
-        totalDonationYen: derived.totalDonationYen
-      };
-      const blob = loadBlobClient();
-      if (blob) {
-        try {
-          await putStatsToBlob(newStats);
-          // チャットメッセージの Blob を削除する
-          const msgPrefix = CHAT_BLOB_PREFIX + taskId + '/';
-          const pathnames = [];
-          let cursor = undefined;
-          do {
-            const listed = await blob.list({
-              prefix: msgPrefix,
-              limit: 1000,
-              cursor: cursor,
-              token: process.env.BLOB_READ_WRITE_TOKEN
-            });
-            for (const b of (listed.blobs || [])) {
-              if (b.pathname) pathnames.push(b.pathname);
-            }
-            cursor = listed.hasMore ? listed.cursor : undefined;
-          } while (cursor);
-          if (pathnames.length > 0) {
-            await blob.del(pathnames, { token: process.env.BLOB_READ_WRITE_TOKEN });
-          }
-          await blob.del(task.blobPathname || taskBlobPathname(taskId), { token: process.env.BLOB_READ_WRITE_TOKEN });
-        } catch (err) {
-          console.error('⚠️ Blob からのタスク削除に失敗しました:', err.message);
-          res.writeHead(500, { 'Content-Type': 'application/json; charset=UTF-8' });
-          res.end(JSON.stringify({ error: "failed to delete task" }));
-          return;
-        }
+      // 削除の実処理（統計の再計算・Blob 削除・メモリ反映）は第17弾で
+      // 共通化した deleteTaskWithChats を使う（投稿者本人の削除と同一の
+      // 中身・同一の順序）。Blob 側で失敗したらメモリは変えず 500。
+      let newStats;
+      try {
+        newStats = await deleteTaskWithChats(db, task);
+      } catch (err) {
+        console.error('⚠️ Blob からのタスク削除に失敗しました:', err.message);
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=UTF-8' });
+        res.end(JSON.stringify({ error: "failed to delete task" }));
+        return;
       }
-      db.tasks = remaining;
-      if (db.chatStore) delete db.chatStore[taskId];
-      db.npoStats = newStats;
       saveDB(db);
       res.writeHead(200, { 'Content-Type': 'application/json; charset=UTF-8' });
       res.end(JSON.stringify({ success: true, npoStats: db.npoStats }));

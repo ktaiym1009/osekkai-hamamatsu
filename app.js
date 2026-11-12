@@ -132,6 +132,9 @@ const STORAGE_KEYS = {
   chats: "osekkai_v2_chat_store",
   verification: "osekkai_v2_user_verification",
   completedIds: "osekkai_v2_completed_task_ids",
+  // 第17弾: 自分で削除したタスクのID記録（完了とは別枠。実績カウンターに
+  // 一切影響させないため completedIds とは混ぜない）
+  deletedIds: "osekkai_v2_deleted_task_ids",
   // 第3弾: LINE未連携時に写真申請を識別するための端末内利用者ID
   userKey: "osekkai_v2_user_key",
   // 第6弾: ワンコイン受け取り記録（サーバーに送れない環境向けの端末内保存）
@@ -710,8 +713,37 @@ function addCompletedTaskId(taskId) {
   } catch (e) {}
 }
 
+// 削除済みタスクのID記録（第17弾）
+// 完了済みとは別枠にするのが肝心です: completedIds に入れた記録は「作業が
+// 終わった投稿」の扱いで、完了フロー側の集計と結びついています。削除は
+// 「無かったことにする」操作なので、実績カウンター（助け合い実績・寄付額）
+// が増えるような副作用を絶対に起こさないよう、専用の記録に分けます。
+// fetchTasks はこの記録にあるIDを、サーバー分・端末内分の両方から
+// 常に除外するため、削除した投稿がローカルマージで復活することは
+// ありません。
+function getDeletedTaskIds() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.deletedIds);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return [];
+}
+
+function addDeletedTaskId(taskId) {
+  try {
+    const ids = getDeletedTaskIds();
+    if (!ids.includes(taskId)) {
+      ids.push(taskId);
+      localStorage.setItem(STORAGE_KEYS.deletedIds, JSON.stringify(ids));
+    }
+  } catch (e) {}
+}
+
 async function fetchTasks() {
   const completedIds = getCompletedTaskIds();
+  // 第17弾: 自分で削除した投稿は、サーバー分・端末内分のどちらからも
+  // 二度と表示しない（サーバー側の削除が届かなかった場合の保険も兼ねる）
+  const deletedIds = getDeletedTaskIds();
   let apiTasks = null;
 
   try {
@@ -731,8 +763,8 @@ async function fetchTasks() {
     // サーバー側で保持されなかった）自分のローカル投稿もマージして保持する
     const apiIds = new Set(apiTasks.map(t => t.id));
     const stored = getStoredTasks();
-    const localOnly = (stored || []).filter(t => !apiIds.has(t.id) && !completedIds.includes(t.id));
-    tasksState = [...localOnly, ...apiTasks.filter(t => !completedIds.includes(t.id))];
+    const localOnly = (stored || []).filter(t => !apiIds.has(t.id) && !completedIds.includes(t.id) && !deletedIds.includes(t.id));
+    tasksState = [...localOnly, ...apiTasks.filter(t => !completedIds.includes(t.id) && !deletedIds.includes(t.id))];
     // 0件なら正直に0件表示する（デモ募集は置かない）
     saveStoredTasks(tasksState);
     renderTasks();
@@ -743,7 +775,7 @@ async function fetchTasks() {
   // Fallback for offline/client state
   const local = getStoredTasks();
   if (local && Array.isArray(local)) {
-    tasksState = local.filter(t => !completedIds.includes(t.id));
+    tasksState = local.filter(t => !completedIds.includes(t.id) && !deletedIds.includes(t.id));
   } else {
     tasksState = [...INITIAL_SAMPLE_TASKS]; // 空配列（デモデータなし）
     saveStoredTasks(tasksState);
@@ -840,6 +872,73 @@ async function completeTaskApi(taskId) {
   renderTasks();
   updateWardCounts();
 }
+
+// --- 自分の投稿の削除（第17弾） ---
+// これまで投稿を取り下げ・削除する手段は運営者の管理画面しかなく、共有化
+// より前に端末内だけで作った投稿（テスト投稿など）が、本人の画面にだけ
+// 残り続けていました。自分の投稿のカードにだけ削除ボタンを出し、
+// 本人が自分の手で消せるようにします。
+// 削除の流れ:
+//   1. サーバーにもある投稿は POST /api/tasks/:id/delete でサーバーからも
+//      消す（サーバー側で requesterKey と自分のキーの一致を検証する。
+//      他人の投稿はボタン自体が出ず、万一呼ばれてもサーバーが 403）。
+//   2. サーバーに無い（404）= 端末内だけの投稿は、そのまま端末側の削除で
+//      完了とする。サーバーへ届かない（オフライン等）場合も、claim /
+//      release と同じ方針で端末側の削除に進む（自分の画面からは消える。
+//      ただしその場合サーバー側のコピーは残りうるため、完全な削除は
+//      運営者の管理削除でも担保する）。
+//   3. 端末側は tasksState と保存データから除き、削除済みID記録
+//      （deletedIds）にも入れる。fetchTasks はこの記録を常に除外する
+//      ため、端末内マージで復活することは二度とない。完了済みID記録
+//      （completedIds）には絶対に入れない（「完了」として実績カウンター
+//      が増える副作用を避けるため）。
+function applyLocalTaskDelete(taskId) {
+  tasksState = tasksState.filter(t => t.id !== taskId);
+  addDeletedTaskId(taskId);
+  // 端末内に残っている、その投稿のチャット履歴も一緒に消す
+  // （サーバー側の削除がタスク＋チャットを消すのと揃える）
+  if (chatHistories && chatHistories[taskId]) {
+    delete chatHistories[taskId];
+    saveStoredChats();
+  }
+  chatForbiddenTaskIds.delete(taskId);
+  saveStoredTasks(tasksState);
+  renderTasks();
+  updateWardCounts();
+}
+
+window.deleteOwnTask = async function(taskId) {
+  const task = tasksState.find(t => t.id === taskId);
+  if (!task) return;
+  // 自分の投稿でなければ何もしない（ボタンも自分のカードにしか出ない）
+  if (!task.requesterKey || task.requesterKey !== getMyUserKey()) return;
+  if (!window.confirm("この投稿を削除しますか？")) return;
+
+  let serverRefused = false;
+  try {
+    const res = await apiFetchRaw(`/api/tasks/${taskId}/delete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userKey: getMyUserKey() })
+    });
+    if (res && res.status === 403) {
+      // サーバー側の記録では自分の投稿ではない（鍵が食い違っている）。
+      // 端末側だけ消すと実態と食い違うため、削除自体を中止する。
+      serverRefused = true;
+    }
+    // 200: サーバーからも削除済み
+    // 404: サーバーには無い（端末内だけの投稿）→ 端末側の削除で完了
+    // それ以外（500・応答なし）: 端末側の削除に進む（上の方針コメント参照）
+  } catch (err) {
+    console.warn("⚠️ API deleteOwnTask error:", err);
+  }
+  if (serverRefused) {
+    showToast("この投稿は削除できませんでした");
+    return;
+  }
+  applyLocalTaskDelete(taskId);
+  showToast("投稿を削除しました");
+};
 
 // --- チャット履歴のローカル保存（APIが使えない環境でも会話が消えないように） ---
 // 第10弾: ローカル動作時の「自動返信の再現」も廃止しました（サーバー側と
@@ -1344,6 +1443,15 @@ function renderTasks() {
     } else if (task.helperKey) {
       helperBadge = `<div style="font-size: 0.8rem; font-weight: 700; color: var(--text-muted); margin-top: 0.5rem;">🤝 手伝う人決定済み</div>`;
     }
+    // 第17弾: 自分の投稿のカードにだけ削除ボタンを出す（他人の投稿には
+    // 一切出ない。サーバー側でも所有者キーを照合するため二重に安全）
+    const isMyTask = !!task.requesterKey && task.requesterKey === myKeyForBadge;
+    const deleteButton = isMyTask ? `
+      <div style="text-align: right; margin-top: 0.6rem;">
+        <button class="btn-delete-own-task" onclick="deleteOwnTask('${task.id}')" style="background: white; color: #b91c1c; border: 1.5px solid var(--border); border-radius: var(--radius-md); padding: 0.4rem 0.8rem; font-size: 0.82rem; font-weight: 700; cursor: pointer;">
+          <i class="fa-solid fa-trash"></i> この投稿を削除
+        </button>
+      </div>` : "";
     card.innerHTML = `
       <div>
         <div class="task-card-header">
@@ -1379,6 +1487,7 @@ function renderTasks() {
           詳細を見る / 助ける
         </button>
       </div>
+      ${deleteButton}
     `;
     tasksGrid.appendChild(card);
   });
