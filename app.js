@@ -739,6 +739,30 @@ function addDeletedTaskId(taskId) {
   } catch (e) {}
 }
 
+// --- 端末内のみタスクの判定（第18弾） ---
+// fetchTasks が直近でAPI取得に成功したときの「サーバーに実在するタスク
+// IDの集合」を保持します。tasksState のうちこの集合に無いタスクは、
+// サーバーには無くこの端末の保存データにだけある「端末内のみ
+// （localOnly）」の投稿です（共有化より前に作られたテスト投稿など）。
+// 第17弾の削除ボタンは requesterKey が現在の自分のキーと一致する投稿に
+// しか出なかったため、キーが null・連携前の旧キーで記録された端末内のみ
+// の投稿にはボタンが出ず、消せないまま残っていました。第18弾ではこの
+// 判定を使って、端末内のみの投稿にも削除ボタンを出します。その削除は
+// この端末のコピーを消すだけの操作で、サーバーや他の利用者の画面には
+// 一切影響しません（サーバーに実在する他人の投稿には出さない）。
+// 直近の取得が失敗（オフライン等）のフォールバック時は、サーバーの
+// 実在を確認できないため、保存済みタスクをすべて端末内のみとして
+// 扱います（この場合の削除も端末内のみです）。
+let serverTaskIds = null;
+let tasksFetchUsedFallback = false;
+
+function isLocalOnlyTask(task) {
+  if (!task) return false;
+  if (tasksFetchUsedFallback) return true;
+  if (serverTaskIds === null) return true; // まだ一度も取得に成功していない
+  return !serverTaskIds.has(task.id);
+}
+
 async function fetchTasks() {
   const completedIds = getCompletedTaskIds();
   // 第17弾: 自分で削除した投稿は、サーバー分・端末内分のどちらからも
@@ -759,9 +783,13 @@ async function fetchTasks() {
   }
 
   if (apiTasks !== null) {
+    // 第18弾: 直近の取得成功として「サーバーに実在するタスクIDの集合」を
+    // 更新する（端末内のみ判定 isLocalOnlyTask が使う）
+    serverTaskIds = new Set(apiTasks.map(t => t.id));
+    tasksFetchUsedFallback = false;
     // APIが使える場合: APIの内容を正としつつ、APIにまだ無い（または
     // サーバー側で保持されなかった）自分のローカル投稿もマージして保持する
-    const apiIds = new Set(apiTasks.map(t => t.id));
+    const apiIds = serverTaskIds;
     const stored = getStoredTasks();
     const localOnly = (stored || []).filter(t => !apiIds.has(t.id) && !completedIds.includes(t.id) && !deletedIds.includes(t.id));
     tasksState = [...localOnly, ...apiTasks.filter(t => !completedIds.includes(t.id) && !deletedIds.includes(t.id))];
@@ -773,6 +801,9 @@ async function fetchTasks() {
   }
 
   // Fallback for offline/client state
+  // 第18弾: フォールバック時はサーバーの実在を確認できないため、保存済み
+  // タスクをすべて端末内のみとして扱う（isLocalOnlyTask が参照する）
+  tasksFetchUsedFallback = true;
   const local = getStoredTasks();
   if (local && Array.isArray(local)) {
     tasksState = local.filter(t => !completedIds.includes(t.id) && !deletedIds.includes(t.id));
@@ -892,6 +923,13 @@ async function completeTaskApi(taskId) {
 //      ため、端末内マージで復活することは二度とない。完了済みID記録
 //      （completedIds）には絶対に入れない（「完了」として実績カウンター
 //      が増える副作用を避けるため）。
+// 第18弾の追加: 端末内のみの投稿（isLocalOnlyTask）は、requesterKey が
+// null や連携前の旧キーで自分の投稿と判定できない場合でも、削除ボタン
+// を出して消せるようにします。この端末の保存データにしか無いコピーを
+// 消すだけなので、サーバー削除APIは呼ばず（サーバーに実在しないため
+// 呼んでも 404 になるだけ）、端末側の削除だけで完了します。自分の投稿
+// と判定できるものは従来どおり上記 1〜3 の流れ（サーバー削除API経由）
+// で処理し、第17弾の挙動は変えません。
 function applyLocalTaskDelete(taskId) {
   tasksState = tasksState.filter(t => t.id !== taskId);
   addDeletedTaskId(taskId);
@@ -910,9 +948,22 @@ function applyLocalTaskDelete(taskId) {
 window.deleteOwnTask = async function(taskId) {
   const task = tasksState.find(t => t.id === taskId);
   if (!task) return;
-  // 自分の投稿でなければ何もしない（ボタンも自分のカードにしか出ない）
-  if (!task.requesterKey || task.requesterKey !== getMyUserKey()) return;
+  const isMine = !!task.requesterKey && task.requesterKey === getMyUserKey();
+  // 第18弾: 端末内のみの投稿は、自分の投稿と判定できなくても削除対象に
+  // する（ボタンもその条件で出している）。サーバーに実在する他人の投稿
+  // だけは対象外で、何もしない。
+  const localOnly = isLocalOnlyTask(task);
+  if (!isMine && !localOnly) return;
   if (!window.confirm("この投稿を削除しますか？")) return;
+
+  if (localOnly && !isMine) {
+    // 端末内のみの投稿はサーバーに実在しないため、サーバー削除APIは
+    // 呼ばない。端末側の削除（deletedIds 登録＋チャット履歴の削除）で
+    // 完了し、再取得でも復活しない。
+    applyLocalTaskDelete(taskId);
+    showToast("投稿を削除しました");
+    return;
+  }
 
   let serverRefused = false;
   try {
@@ -1445,8 +1496,15 @@ function renderTasks() {
     }
     // 第17弾: 自分の投稿のカードにだけ削除ボタンを出す（他人の投稿には
     // 一切出ない。サーバー側でも所有者キーを照合するため二重に安全）
+    // 第18弾: 端末内のみの投稿（サーバーに実在せず、この端末の保存データ
+    // にだけ残っている投稿）にも削除ボタンを出す。共有化より前のテスト
+    // 投稿は requesterKey が null や連携前の旧キーで記録されており、第17弾
+    // の条件ではボタンが出なかった。端末内のみの投稿の削除はこの端末の
+    // コピーを消すだけなので、他人のサーバー上の投稿には一切影響しない。
+    // サーバーに実在する他人の投稿には引き続き出さない。
     const isMyTask = !!task.requesterKey && task.requesterKey === myKeyForBadge;
-    const deleteButton = isMyTask ? `
+    const canDeleteTask = isMyTask || isLocalOnlyTask(task);
+    const deleteButton = canDeleteTask ? `
       <div style="text-align: right; margin-top: 0.6rem;">
         <button class="btn-delete-own-task" onclick="deleteOwnTask('${task.id}')" style="background: white; color: #b91c1c; border: 1.5px solid var(--border); border-radius: var(--radius-md); padding: 0.4rem 0.8rem; font-size: 0.82rem; font-weight: 700; cursor: pointer;">
           <i class="fa-solid fa-trash"></i> この投稿を削除
