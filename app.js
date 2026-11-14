@@ -1147,6 +1147,12 @@ let liffReady = false;
 let liffSdkMissing = false;
 // liff.init() が失敗した場合、そのエラー内容を保持する
 let liffInitError = null;
+// 第19弾: liff.init() の見張り番の制限時間（ミリ秒）。これを過ぎても
+// 初期化が完了も失敗もしない場合は、初期化エラーとして扱う
+const LIFF_INIT_TIMEOUT_MS = 10000;
+// 第19弾: LINE 内ブラウザから通常URLで開かれた場合に、LIFF 入り口への
+// 自動誘導を「セッション内で1回だけ」にするための sessionStorage の鍵
+const LIFF_ENTRANCE_REDIRECT_KEY = "osekkai_v2_liff_entrance_redirected";
 
 // ヘッダーの LINE ボタンのラベルを、実際の連携状態に合わせて更新する
 function updateLineStatusUI() {
@@ -1177,6 +1183,53 @@ async function applyLineProfile() {
   // 手動ログインのどちらの経路でも LINE の鍵で問い直せる。
   await syncMyVerificationStatus();
   return profile;
+}
+
+// LINE アプリ内ブラウザで開かれているか（ユーザーエージェントに
+// 「Line/」を含むかで判定する。LINE 内ブラウザの UA には必ず入る）
+function isLineInAppBrowser() {
+  const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+  return /Line\//i.test(ua);
+}
+
+// LIFF の正式な入り口URL（liff.line.me 経由）。LIFF ID が未設定なら空文字
+function liffEntranceUrl() {
+  if (typeof LINE_CONFIG === "undefined" || !LINE_CONFIG.liffId) return "";
+  return "https://liff.line.me/" + LINE_CONFIG.liffId;
+}
+
+// 第19弾: LINE 内ブラウザで「通常URL」から開かれ、LIFF ログインが成立
+// していない場合、セッション内で1回だけ LIFF 入り口へ自動で遷移する。
+// 通常URLを LINE 内ブラウザで直接開くと、liff.login() の往復（ログイン
+// 完了ダイアログ→[続行]）で連携が完結しないことがある（実地症状）。
+// 一方、LIFF 入り口から開くと LINE 内ではそのままログインが成立する。
+// 戻り先はこのページ（LIFF エンドポイント）で、戻ってきた後はログインが
+// 成立しているため再遷移しない。万一成立しなかった場合も、フラグが残る
+// 間は二度と遷移しないのでループにはならない。
+// 通常ブラウザ（Chrome 等）では絶対に発動しない。遷移したら true を返す。
+function maybeRedirectToLiffEntrance() {
+  try {
+    if (!isLineInAppBrowser()) return false;
+    if (typeof sessionStorage === "undefined") return false;
+    if (sessionStorage.getItem(LIFF_ENTRANCE_REDIRECT_KEY)) return false;
+    const url = liffEntranceUrl();
+    if (!url) return false;
+    sessionStorage.setItem(LIFF_ENTRANCE_REDIRECT_KEY, new Date().toISOString());
+    location.assign(url);
+    return true;
+  } catch (e) {
+    // sessionStorage が使えない環境では誘導せず、従来の表示に委ねる
+    console.warn("LIFF entrance redirect skipped:", e);
+    return false;
+  }
+}
+
+// LINE モーダルが開いている場合だけ、現在の状態で表示を描き直す（第19弾）
+function refreshLineModalIfOpen() {
+  const modal = document.getElementById("lineAccountModal");
+  if (modal && modal.classList.contains("active")) {
+    showLineAccountModal();
+  }
 }
 
 // Initialize LINE LIFF SDK
@@ -1210,7 +1263,33 @@ function initLineLiff() {
     return;
   }
 
+  // 第19弾: 初期化の見張り番。liff.init() は環境によって解決も失敗も
+  // しないまま固まることがあり、その間モーダルは「確認中です…」のまま
+  // になってしまう。制限時間を過ぎたら初期化エラーとして扱い、理由と
+  // 再試行ボタンの表示に切り替える（既存の liffInitError の表示経路）。
+  // 時間超過の「後」に初期化が完了した場合は、成功を採用してエラー
+  // 扱いを取り消す（遅い通信環境での誤判定から回復できるように）。
+  let liffInitSettled = false;
+  let liffInitTimedOut = false;
+  const liffInitWatchdog = setTimeout(() => {
+    if (liffInitSettled) return;
+    liffInitTimedOut = true;
+    liffInitError = new Error("LINE連携の初期化が時間内に終わりませんでした");
+    console.warn("LINE LIFF init timeout:", liffInitError);
+    updateLineStatusUI();
+    // 開いたままのモーダルが「確認中」で固まらないようエラー表示に差し替える
+    refreshLineModalIfOpen();
+  }, LIFF_INIT_TIMEOUT_MS);
+
   liff.init({ liffId: LINE_CONFIG.liffId }).then(() => {
+    liffInitSettled = true;
+    clearTimeout(liffInitWatchdog);
+    const recoveredFromTimeout = liffInitTimedOut;
+    if (recoveredFromTimeout) {
+      // 見張り番がエラー扱いにした後に初期化が終わった場合は取り消す
+      liffInitTimedOut = false;
+      liffInitError = null;
+    }
     liffReady = true;
     if (liff.isLoggedIn()) {
       // ログイン済み（LINEアプリ内、またはログイン後に戻ってきた状態）
@@ -1219,11 +1298,20 @@ function initLineLiff() {
         // 第14弾: 本人確認の途中で連携するために移動し、戻ってきた場合は
         // 本人確認モーダルを開き直して、そのまま続けられるようにする
         reopenVerifyModalIfPending();
+        // 第19弾: 見張り番でエラー表示に切り替えたモーダルが開いたままなら戻す
+        if (recoveredFromTimeout) refreshLineModalIfOpen();
       }).catch(err => {
         console.warn("LINE Profile fetch error:", err);
       });
+    } else if (maybeRedirectToLiffEntrance()) {
+      // 第19弾: LINE 内ブラウザで通常URLから開かれ未ログインの場合、
+      // LIFF 入り口へ自動で遷移した（この後はページが切り替わる）
+    } else if (recoveredFromTimeout) {
+      refreshLineModalIfOpen();
     }
   }).catch(err => {
+    liffInitSettled = true;
+    clearTimeout(liffInitWatchdog);
     // 初期化に失敗する主な原因: LIFF のエンドポイントURLにこのページのURLが
     // 登録されていない、LIFF ID の誤り、チャネルの設定不備など。
     // 失敗を隠さず、モーダルで理由と対処を表示する。
@@ -1458,6 +1546,9 @@ window.showLineAccountModal = showLineAccountModal;
 window.closeLineAccountModal = closeLineAccountModal;
 window.triggerLiffLoginAction = triggerLiffLoginAction;
 window.triggerLiffLogoutAction = triggerLiffLogoutAction;
+// 第19弾: テストから見張り番の制限時間と誘導フラグの鍵を確認できるよう公開
+window.LIFF_INIT_TIMEOUT_MS = LIFF_INIT_TIMEOUT_MS;
+window.LIFF_ENTRANCE_REDIRECT_KEY = LIFF_ENTRANCE_REDIRECT_KEY;
 
 // Render Tasks Cards Grid with Category & Ward Filters
 function renderTasks() {
