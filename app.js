@@ -228,6 +228,88 @@ function reopenVerifyModalIfPending() {
 window.isLineLinkedForVerify = isLineLinkedForVerify;
 window.updateVerifyLinkGateUI = updateVerifyLinkGateUI;
 
+// --- 第20弾: 本人確認の「段階制」と、やり取り開始時の案内 ---
+// 方針（運営者の決定）: 参加の入口は LINE 連携だけで OK とし、本人確認は
+// 「実際にお手伝いのやり取りが始まる時点」でお願いする。案内は出すが
+// ブロックはしない（案内を閉じれば、そのままやり取りを続けられる）。
+// 表示頻度はセッション中に1回だけに抑える（sessionStorage に印を残す。
+// sessionStorage が使えない環境向けにメモリ上の印も併用する）。
+// 認証済みの人と、既に写真を送って確認待ちの人には出さない。
+const VERIFY_GUIDE_SHOWN_KEY = "osekkai_v2_verify_guide_shown";
+let verifyGuideShownMemory = false;
+
+// 本人確認が済んでいるか（サーバーで承認済み、または端末側の認証済み状態）
+function isIdentityVerified() {
+  if (userVerification.verifyStatus === "approved") return true;
+  return !!(userVerification.requester && userVerification.helper);
+}
+
+function verifyGuideAlreadyShown() {
+  if (verifyGuideShownMemory) return true;
+  try { return !!sessionStorage.getItem(VERIFY_GUIDE_SHOWN_KEY); } catch (e) { return false; }
+}
+
+function markVerifyGuideShown() {
+  verifyGuideShownMemory = true;
+  try { sessionStorage.setItem(VERIFY_GUIDE_SHOWN_KEY, "1"); } catch (e) {}
+}
+
+// 未認証で、まだ案内を出していなければ案内モーダルを出す。出したら true。
+// 確認待ち（提出済み）の人には出さない（もう手続きを進めているため）。
+function maybeShowVerifyGuide() {
+  if (isIdentityVerified()) return false;
+  if (userVerification.verifyStatus === "pending") return false;
+  if (verifyGuideAlreadyShown()) return false;
+  markVerifyGuideShown();
+  showVerifyGuideModal();
+  return true;
+}
+
+// やり取り開始時の案内モーダル。「今すぐ本人確認する」では本人確認モーダル
+// へ進み、「あとで」では閉じるだけ（やり取りはそのまま続けられる）。
+function showVerifyGuideModal() {
+  let modal = document.getElementById("verifyGuideModal");
+  if (!modal) {
+    modal = document.createElement("div");
+    modal.id = "verifyGuideModal";
+    modal.className = "modal-overlay";
+    document.body.appendChild(modal);
+  }
+  modal.innerHTML = `
+    <div class="modal-card" style="max-width: 480px; text-align: center;">
+      <div style="font-size: 2rem; margin-bottom: 0.5rem;">🪪</div>
+      <h3 style="font-weight: 900; font-size: 1.15rem; color: var(--text-main); margin-bottom: 0.75rem;">ここからは本人確認をお願いします</h3>
+      <div style="font-size: 0.88rem; color: var(--text-muted); line-height: 1.7; text-align: left; margin-bottom: 1.25rem;">
+        安心してやり取りできるよう、実際にお手伝いのやり取りが始まるときに本人確認をお願いしています。<br>
+        ・身分証はマイナンバーカードか運転免許証のどちらでもOKです<br>
+        ・写真は表面のみで大丈夫です（裏面は送らないでください）<br>
+        ・写真を見られるのは運営者だけです<br>
+        本人確認はあとからでもできます。このままやり取りを続けることもできます。
+      </div>
+      <button type="button" class="btn-hero-action" id="btnVerifyGuideNow" style="width: 100%; background: var(--primary); color: white; margin-bottom: 0.6rem;">
+        <i class="fa-solid fa-id-card"></i> 今すぐ本人確認する
+      </button>
+      <button type="button" class="btn-hero-action" id="btnVerifyGuideLater" style="width: 100%; background: white; color: var(--text-muted); border: 1.5px solid var(--border);">
+        あとで
+      </button>
+    </div>`;
+  openModal(modal);
+  const nowBtn = document.getElementById("btnVerifyGuideNow");
+  if (nowBtn) nowBtn.addEventListener("click", () => {
+    closeModal(modal);
+    if (typeof window.resetVerifyModalUI === "function") window.resetVerifyModalUI();
+    updateVerifyLinkGateUI();
+    openModal(verifyModal);
+  });
+  const laterBtn = document.getElementById("btnVerifyGuideLater");
+  if (laterBtn) laterBtn.addEventListener("click", () => closeModal(modal));
+}
+
+window.isIdentityVerified = isIdentityVerified;
+window.maybeShowVerifyGuide = maybeShowVerifyGuide;
+window.showVerifyGuideModal = showVerifyGuideModal;
+window.VERIFY_GUIDE_SHOWN_KEY = VERIFY_GUIDE_SHOWN_KEY;
+
 // 写真を送信前に縮小する（最大幅800px目安・JPEG化）。写真そのものが写って
 // いるか運営者が目視で判断できれば十分なため、容量を抑えて送信します。
 function shrinkImageToJpeg(dataUrl, maxWidth = 800) {
@@ -2316,6 +2398,8 @@ window.acceptTaskMatch = async function(taskId) {
     renderTaskDetailActions(task);
     showToast("🤝 マッチングが成立しました！チャット機能が解放されました。");
     updateFamilyLog(`【安心通知】サポーターとのマッチングが完了し、チャットでの事前連絡が開始されました。`);
+    // 第20弾: やり取りの開始時点で本人確認の案内を出す（ブロックはしない）
+    maybeShowVerifyGuide();
   };
 
   try {
@@ -2337,6 +2421,8 @@ window.acceptTaskMatch = async function(taskId) {
       renderTaskDetailActions(task);
       showToast("🤝 マッチングが成立しました！チャット機能が解放されました。");
       updateFamilyLog(`【安心通知】サポーターとのマッチングが完了し、チャットでの事前連絡が開始されました。`);
+      // 第20弾: やり取りの開始時点で本人確認の案内を出す（ブロックはしない）
+      maybeShowVerifyGuide();
       return;
     }
     if (res && res.status === 409) {
@@ -2424,6 +2510,9 @@ window.openChatModal = function(taskId) {
   }, 2500);
 
   openModal(chatModal);
+  // 第20弾: 未認証のままチャット（やり取り）を開いたら、本人確認の案内を
+  // 出す。セッション中に1回だけで、チャット自体はそのまま使える。
+  maybeShowVerifyGuide();
 };
 
 // Render Chat Messages Timeline
