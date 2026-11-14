@@ -35,7 +35,11 @@ let chatHistories = {};
 // わせはほぼ毎回サーバー側の再読み込み間隔を超え、新しい状態が返る。
 // 承認の反映に気づくまでの遅延は、概ね「間隔20秒＋TTLの残り最大15秒」
 // 程度が目安（あわせて第9弾の伝播遅延の項も参照）。
-const VERIFY_POLL_INTERVAL_MS = 20000;
+// 第21弾: ストレージの操作回数（無料枠）を守るため、間隔を60秒に緩め
+// ました。ポーリングは従来どおり「画面が前面にあるときだけ」動き、
+// 前面に戻った時点で即時1回確認するので、体感の遅れは最大でも
+// 「間隔60秒＋TTLの残り最大15秒」程度です。
+const VERIFY_POLL_INTERVAL_MS = 60000;
 let verifyPollingTimer = null;
 
 // DOM Elements
@@ -55,10 +59,12 @@ const verifyModal = document.getElementById("verifyModal");
 const taskDetailModal = document.getElementById("taskDetailModal");
 const npoModal = document.getElementById("npoModal");
 const chatModal = document.getElementById("chatModal");
+const aboutModal = document.getElementById("aboutModal");
 
 // Buttons & Forms
 const openCreateTaskBtn = document.getElementById("openCreateTaskBtn");
 const openVerifyModalBtn = document.getElementById("openVerifyModalBtn");
+const openAboutModalBtn = document.getElementById("openAboutModalBtn");
 const openNpoModalBtn = document.getElementById("openNpoModalBtn");
 const createTaskForm = document.getElementById("createTaskForm");
 
@@ -309,6 +315,66 @@ window.isIdentityVerified = isIdentityVerified;
 window.maybeShowVerifyGuide = maybeShowVerifyGuide;
 window.showVerifyGuideModal = showVerifyGuideModal;
 window.VERIFY_GUIDE_SHOWN_KEY = VERIFY_GUIDE_SHOWN_KEY;
+
+// --- 第22弾: 初めての利用者向けの説明「おせっ会について」 ---
+// 試験利用の声（「利用者側か、お手伝いする側か、どちらで登録するのか
+// 分からない」「500円は自腹で払う仕組みですか？」）を受けた追加。
+// 説明本文は index.html の #aboutModal に静的に置き、サイドバーの
+// ボタンからいつでも開ける。あわせて、その端末で初めて開いたとき
+// だけ自動で1回表示する（localStorage に印を残すので、端末ごとに1回。
+// localStorage が使えない環境向けにメモリ上の印も併用する）。
+// 初回表示は他の案内と競合させない:
+//   - 起動直後ではなく少し遅らせてから判定する（LIFF 初期化や
+//     第19弾の入り口誘導が先に進むように）
+//   - 判定時点で他のモーダルが開いていれば出さない（印も付けないので、
+//     次に開いたときに改めて1回だけ出る）
+//   - LINE 連携の往復から戻って本人確認を続けている途中
+//     （VERIFY_LINK_PENDING_KEY がある）ときは出さない
+//   - LINE アプリ内ブラウザで未連携のときは出さない（第19弾の
+//     LIFF 入り口への自動誘導が優先される）
+// 第20弾の案内（verifyGuideModal）はやり取り開始時にセッション1回だけ
+// 出るもので、こちらは初回表示が済んでいれば以後は重ならない。
+const ABOUT_SEEN_KEY = "osekkai_v2_about_seen";
+const ABOUT_FIRST_VISIT_DELAY_MS = 2500;
+let aboutSeenMemory = false;
+
+function aboutAlreadySeen() {
+  if (aboutSeenMemory) return true;
+  try { return !!localStorage.getItem(ABOUT_SEEN_KEY); } catch (e) { return false; }
+}
+
+function markAboutSeen() {
+  aboutSeenMemory = true;
+  try { localStorage.setItem(ABOUT_SEEN_KEY, "1"); } catch (e) {}
+}
+
+// 「おせっ会について」を開く（サイドバーのボタン・初回表示の共通経路）。
+// 一度でも表示したら「見た」印を付ける（手動で開いた場合も、内容を
+// 見たことに変わりはないため、後の自動表示はしない）。
+function showAboutModal() {
+  if (!aboutModal) return false;
+  markAboutSeen();
+  openModal(aboutModal);
+  return true;
+}
+
+// 初回表示の判定。条件が揃ったときだけ表示し、表示したら true。
+function maybeShowAboutOnFirstVisit() {
+  if (aboutAlreadySeen()) return false;
+  if (!aboutModal) return false;
+  // 他のモーダルが開いている間は重ねない（印も付けない）
+  if (document.querySelector(".modal-overlay.active")) return false;
+  // 本人確認を続けるために LINE 連携から戻ってきた途中では出さない
+  try { if (sessionStorage.getItem(VERIFY_LINK_PENDING_KEY)) return false; } catch (e) {}
+  // LINE アプリ内ブラウザで未連携なら、LIFF 入り口への誘導を優先する
+  if (typeof isLineInAppBrowser === "function" && isLineInAppBrowser() && !lineUserProfile.isLoggedIn) return false;
+  return showAboutModal();
+}
+
+window.showAboutModal = showAboutModal;
+window.maybeShowAboutOnFirstVisit = maybeShowAboutOnFirstVisit;
+window.ABOUT_SEEN_KEY = ABOUT_SEEN_KEY;
+window.ABOUT_FIRST_VISIT_DELAY_MS = ABOUT_FIRST_VISIT_DELAY_MS;
 
 // 写真を送信前に縮小する（最大幅800px目安・JPEG化）。写真そのものが写って
 // いるか運営者が目視で判断できれば十分なため、容量を抑えて送信します。
@@ -1215,6 +1281,11 @@ document.addEventListener("DOMContentLoaded", () => {
   setupWardFilters();
   initLineLiff();
 
+  // 第22弾: 初めての利用者向けの説明を、その端末で初めて開いたとき
+  // だけ自動で1回表示する。起動直後の初期化（LIFF・第19弾の入り口
+  // 誘導など）と競合しないよう、少し遅らせてから判定する
+  setTimeout(() => { maybeShowAboutOnFirstVisit(); }, ABOUT_FIRST_VISIT_DELAY_MS);
+
   setInterval(() => {
     fetchTasks();
     fetchStats();
@@ -1782,6 +1853,11 @@ function setupEventListeners() {
     resetVerifyModalUI();
     openModal(verifyModal);
   });
+  // 第22弾: サイドバーの「おせっ会について見る」ボタンと、説明モーダル内の
+  // 「閉じる」ボタン（×ボタンと外側タップは共通の閉じ方で処理される）
+  if (openAboutModalBtn) openAboutModalBtn.addEventListener("click", () => showAboutModal());
+  const btnCloseAboutModal = document.getElementById("btnCloseAboutModal");
+  if (btnCloseAboutModal) btnCloseAboutModal.addEventListener("click", () => closeModal(aboutModal));
   // 第14弾: 本人確認モーダル内の「LINE連携する」ボタン。連携のために移動する
   // 前に「本人確認に戻る」印を付け、既存の連携フロー（LIFF ログイン）を開始する
   const btnVerifyLineLink = document.getElementById("btnVerifyLineLink");

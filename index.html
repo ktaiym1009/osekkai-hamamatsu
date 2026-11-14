@@ -35,9 +35,9 @@
   
   <!-- LINE LIFF SDK & Config -->
   <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
-  <script src="line_config.js?v=20261114_v16"></script>
+  <script src="line_config.js?v=20261114_v17"></script>
 
-  <link rel="stylesheet" href="index.css?v=20261114_v16">
+  <link rel="stylesheet" href="index.css?v=20261114_v17">
 </head>
 <body>
 
@@ -129,6 +129,21 @@
 
     <!-- Sidebar: Safety, Mutual ID, Category Filters -->
     <aside class="sidebar-panel">
+
+      <!-- About Osekkai (第22弾: 初めての利用者向けの説明への入口。
+           登録の仕組みとワンコインの意味をまとめたモーダルを開く) -->
+      <div class="card-glass">
+        <h3 class="panel-title">
+          <i class="fa-solid fa-circle-info" style="color: var(--primary);"></i>
+          おせっ会について
+        </h3>
+        <p style="font-size: 0.82rem; color: var(--text-muted);">
+          初めての方へ。登録の仕方と、ワンコイン（500円）の意味をまとめました。
+        </p>
+        <button class="btn-verify" id="openAboutModalBtn">
+          <i class="fa-solid fa-book-open"></i> おせっ会について見る
+        </button>
+      </div>
 
       <!-- Mutual Identity Verification Box -->
       <div class="card-glass">
@@ -445,6 +460,46 @@
     </div>
   </div>
 
+  <!-- Modal 2.2: About Osekkai (第22弾: 初めての利用者向けの説明)
+       登録は1つだけであること・使い方の流れ・ワンコイン500円の意味を、
+       短く分かりやすくまとめたもの。サイドバーのボタンからいつでも開け、
+       その端末で初めて開いたときだけ自動で1回表示される（app.js 側で制御） -->
+  <div class="modal-overlay" id="aboutModal">
+    <div class="modal-card" style="max-width: 560px;">
+      <div class="modal-header">
+        <h3 class="modal-title">
+          <i class="fa-solid fa-hand-holding-heart" style="color: var(--primary);"></i>
+          おせっ会について
+        </h3>
+        <button class="btn-close-modal">&times;</button>
+      </div>
+
+      <div style="font-size: 0.9rem; color: var(--text-main); line-height: 1.7;">
+        <h4 style="font-weight: 800; margin-bottom: 0.35rem;">登録は1つだけです</h4>
+        <p style="color: var(--text-muted); margin-bottom: 1.1rem;">
+          おせっ会では、「助けてもらう人」と「お手伝いする人」で登録を分けていません。登録は1つだけです。困ったときは「お願い」を投稿する側に、できそうなお願いを見つけたら「お手伝いする」と手を挙げる側に、同じ登録でどちらにもなれます。みんなが両方をやる、助け合いの場です。
+        </p>
+
+        <h4 style="font-weight: 800; margin-bottom: 0.35rem;">使い方の流れ</h4>
+        <ol style="color: var(--text-muted); margin: 0 0 1.1rem 1.25rem; padding: 0;">
+          <li>LINE連携で参加します（参加はこれだけでOKです）</li>
+          <li>「お願い」を投稿する、または一覧からできそうなお願いに「お手伝いする」と申し出ます</li>
+          <li>相手が決まったら、チャットでやり取りします（このとき、本人確認をお願いする場合があります）</li>
+          <li>お手伝いが終わったら、ワンコイン（500円）をお渡しします</li>
+        </ol>
+
+        <h4 style="font-weight: 800; margin-bottom: 0.35rem;">ワンコイン（500円）について</h4>
+        <p style="color: var(--text-muted); margin-bottom: 1.25rem;">
+          お手伝いが終わったら、助けてもらった人が、その場で現金500円を手伝ってくれた人に渡します。この500円は、お手伝いへのお礼やお給料ではありません。受け取った人は運営に預け、貯まった分をまとめて子ども食堂へ寄付します（ワンコイン寄付）。お手伝い自体はボランティアです。寄付の累計は、このページの上のほうに表示しています。
+        </p>
+      </div>
+
+      <button type="button" class="btn-hero-action" id="btnCloseAboutModal" style="width: 100%; background: var(--primary); color: white;">
+        閉じる
+      </button>
+    </div>
+  </div>
+
   <!-- Modal 2.5: Live Rear Camera Viewfinder Modal -->
   <div class="modal-overlay" id="cameraModal">
     <div class="modal-card" style="max-width: 520px; padding: 1.25rem; text-align: center;">
@@ -615,6 +670,6 @@
 
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="app.js?v=20261114_v16"></script>
+  <script src="app.js?v=20261114_v17"></script>
 </body>
 </html>
