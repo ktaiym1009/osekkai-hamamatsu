@@ -39,8 +39,54 @@ const ADMIN_PASSCODE = process.env.OSEKKAI_ADMIN_PASSCODE || 'osekkai-admin-2026
 // 確認作業をできないためです（判断の詳細は REPORT.md 第4弾）。
 const VERIFY_BLOB_PREFIX = 'verify-requests/';
 
+// --- 保存バックエンドの切り替え（第21弾） ---
+// 既定は従来の Vercel Blob です。環境変数 OSEKKAI_STORAGE=s3 を設定すると、
+// S3 互換ストレージ（Backblaze B2）を使うクライアントを返します。
+// S3 クライアントは @vercel/blob のうち本サーバーが使う範囲
+// （put / get / list / del）と同じインターフェースに揃えてあるため、
+// 以後の保存処理はどちらのバックエンドでも同じ呼び出しで動作します。
+// 接続情報は環境変数 S3_ENDPOINT / S3_REGION / S3_BUCKET /
+// S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY から読みます（詳細は
+// storage_s3.js と REPORT.md 第21弾）。
+// なおレコード側の印（photoStorage: 'blob' / storage: 'blob'）は
+// 「外部オブジェクトストレージ保存」を表す既存の値のままとし、
+// バックエンドが Blob でも S3 でも変えません（既存データとの互換のため）。
+function storageBackend() {
+  return process.env.OSEKKAI_STORAGE === 's3' ? 's3' : 'blob';
+}
+
+let s3ClientCache; // undefined=未試行 / null=利用不可 / object=S3互換クライアント
+function loadS3Client() {
+  if (s3ClientCache !== undefined) return s3ClientCache;
+  try {
+    // テストでは OSEKKAI_S3_MODULE_PATH にモックモジュールのパスを指定
+    // できます。本番パスは Blob と同じく、依存関係トレースが読み取れる
+    // 相対パスのリテラル require にしてください。
+    const mod = process.env.OSEKKAI_S3_MODULE_PATH
+      ? require(process.env.OSEKKAI_S3_MODULE_PATH)
+      : require('./storage_s3');
+    const factory = (mod && typeof mod.createS3Client === 'function') ? mod.createS3Client : null;
+    if (!factory) throw new Error('storage_s3 module does not export createS3Client');
+    const cfg = (typeof mod.configFromEnv === 'function')
+      ? mod.configFromEnv(process.env)
+      : {
+          endpoint: process.env.S3_ENDPOINT || '',
+          region: process.env.S3_REGION || 'us-east-1',
+          bucket: process.env.S3_BUCKET || '',
+          accessKeyId: process.env.S3_ACCESS_KEY_ID || '',
+          secretAccessKey: process.env.S3_SECRET_ACCESS_KEY || ''
+        };
+    s3ClientCache = factory(cfg);
+  } catch (err) {
+    console.error('⚠️ S3互換ストレージを初期化できませんでした。外部保存なし（db.json方式）で動作します:', err.message);
+    s3ClientCache = null;
+  }
+  return s3ClientCache;
+}
+
 let blobClientCache; // undefined=未試行 / null=利用不可 / object=@vercel/blob モジュール
 function loadBlobClient() {
+  if (storageBackend() === 's3') return loadS3Client();
   if (!process.env.BLOB_READ_WRITE_TOKEN) return null;
   if (blobClientCache !== undefined) return blobClientCache;
   try {
@@ -516,13 +562,17 @@ const hydrateTasksFromBlob = createHydrationReloader('tasks', loadTasksOnceFromB
 // 除き、Blob 側を正として置き換え、createdAt の古い順に並べる。
 // ID の無い旧レコード（db.json 由来）は先頭にそのまま残す。
 // 読み込みのタイミングは第9弾の TTL 付き再読み込みが制御します。
-async function loadChatMessagesOnceFromBlob(db, blob) {
+// 第21弾: onlyTaskId が指定された場合は、そのタスクのプレフィックスだけを
+// list します（操作回数の削減。チャットの読み書きは常に特定タスクの
+// 文脈で起きるため、全タスク分を毎回 list する必要がありません）。
+async function loadChatMessagesOnceFromBlob(db, blob, onlyTaskId) {
   try {
     const pathnames = [];
+    const listPrefix = onlyTaskId ? (CHAT_BLOB_PREFIX + onlyTaskId + '/') : CHAT_BLOB_PREFIX;
     let cursor = undefined;
     do {
       const listed = await blob.list({
-        prefix: CHAT_BLOB_PREFIX,
+        prefix: listPrefix,
         limit: 1000,
         cursor: cursor,
         token: process.env.BLOB_READ_WRITE_TOKEN
@@ -563,6 +613,21 @@ async function loadChatMessagesOnceFromBlob(db, blob) {
   }
 }
 const hydrateChatMessagesFromBlob = createHydrationReloader('task-messages', loadChatMessagesOnceFromBlob);
+
+// 特定タスクのチャットだけを復元する（第21弾・操作回数の削減）。
+// リローダーはタスクごとに保持し、TTL 制御は全体版と同じ作法です。
+// taskId が無い場合は従来の全体版にフォールバックします。
+const chatTaskHydrationReloaders = {};
+function hydrateChatMessagesForTask(db, taskId, options) {
+  if (!taskId) return hydrateChatMessagesFromBlob(db, options);
+  if (!chatTaskHydrationReloaders[taskId]) {
+    chatTaskHydrationReloaders[taskId] = createHydrationReloader(
+      'task-messages:' + taskId,
+      (db2, blob) => loadChatMessagesOnceFromBlob(db2, blob, taskId)
+    );
+  }
+  return chatTaskHydrationReloaders[taskId](db, options);
+}
 
 let inMemoryDB = null;
 
@@ -1148,7 +1213,7 @@ const server = http.createServer(async (req, res) => {
         }
         const db = loadDB();
         await hydrateTasksFromBlob(db);
-        await hydrateChatMessagesFromBlob(db);
+        await hydrateChatMessagesForTask(db, taskId);
         // 統計のうち導出できない2項目（supportedCafeterias 等）を古い
         // メモリ値で潰さないよう、再計算の前に統計も最新化しておく
         // （管理者削除と同じ順序）
@@ -1223,7 +1288,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const db = loadDB();
       await hydrateTasksFromBlob(db);
-      await hydrateChatMessagesFromBlob(db);
+      await hydrateChatMessagesForTask(db, taskId);
       // 統計のうち導出できない2項目（supportedCafeterias 等）を古い
       // メモリ値で潰さないよう、再計算の前に統計も最新化しておく
       await hydrateStatsFromBlob(db, { force: true });
@@ -1270,7 +1335,8 @@ const server = http.createServer(async (req, res) => {
     const db = loadDB();
     await hydrateTasksFromBlob(db);
     // 第7弾: Blob から復元し、当事者の端末では同じ履歴が見えるようにする
-    await hydrateChatMessagesFromBlob(db);
+    // 第21弾: このタスク分だけを復元する（操作回数の削減）
+    await hydrateChatMessagesForTask(db, taskId);
     const task = await findTaskWithReload(db, taskId);
     if (!task) {
       res.writeHead(404, { 'Content-Type': 'application/json; charset=UTF-8' });
@@ -1312,7 +1378,7 @@ const server = http.createServer(async (req, res) => {
         }
         const db = loadDB();
         await hydrateTasksFromBlob(db);
-        await hydrateChatMessagesFromBlob(db);
+        await hydrateChatMessagesForTask(db, taskId);
         const task = await findTaskWithReload(db, taskId);
         if (!task) {
           res.writeHead(404, { 'Content-Type': 'application/json; charset=UTF-8' });
