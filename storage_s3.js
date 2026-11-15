@@ -75,6 +75,25 @@ function parseListObjectsV2(xml) {
   };
 }
 
+// SigV4 の正規クエリ文字列を作る。
+// pathAndQuery 側のクエリは既にパーセントエンコード済み（例: prefix=verify-requests%2F）
+// なので、そのまま encodeURIComponent すると % が二重にエンコードされて
+// 署名が一致しなくなります（2026-11-15 本番で ListObjectsV2 が
+// SignatureDoesNotMatch になった原因）。一度デコードしてから
+// 1回だけエンコードし直すことで正規化します。
+function canonicalQueryOf(rawQuery) {
+  const dec = s => { try { return decodeURIComponent(s); } catch (e) { return s; } };
+  const params = [];
+  for (const pair of String(rawQuery || '').split('&')) {
+    if (!pair) continue;
+    const eq = pair.indexOf('=');
+    if (eq === -1) params.push([encodeURIComponent(dec(pair)), '']);
+    else params.push([encodeURIComponent(dec(pair.slice(0, eq))), encodeURIComponent(dec(pair.slice(eq + 1)))]);
+  }
+  params.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0)));
+  return params.map(p => p[0] + '=' + p[1]).join('&');
+}
+
 function toBuffer(body) {
   if (body === undefined || body === null) return Buffer.alloc(0);
   if (Buffer.isBuffer(body)) return body;
@@ -129,18 +148,7 @@ function createS3Client(config, fetchImpl) {
 
     const qIndex = pathAndQuery.indexOf('?');
     const canonicalUri = qIndex === -1 ? pathAndQuery : pathAndQuery.slice(0, qIndex);
-    let canonicalQuery = '';
-    if (qIndex !== -1) {
-      const params = [];
-      for (const pair of pathAndQuery.slice(qIndex + 1).split('&')) {
-        if (!pair) continue;
-        const eq = pair.indexOf('=');
-        if (eq === -1) params.push([encodeURIComponent(pair), '']);
-        else params.push([encodeURIComponent(pair.slice(0, eq)), encodeURIComponent(pair.slice(eq + 1))]);
-      }
-      params.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0)));
-      canonicalQuery = params.map(p => p[0] + '=' + p[1]).join('&');
-    }
+    const canonicalQuery = qIndex === -1 ? '' : canonicalQueryOf(pathAndQuery.slice(qIndex + 1));
 
     const canonicalRequest = [method, canonicalUri, canonicalQuery, canonicalHeaders, signedHeaders, payloadHash].join('\n');
     const scope = dateStamp + '/' + region + '/s3/aws4_request';
@@ -272,5 +280,5 @@ module.exports = {
   createS3Client,
   configFromEnv,
   // 単体テスト用に内部関数も公開する
-  _internals: { sha256Hex, hmacSha256, deriveSigningKey, parseListObjectsV2, encodeKey }
+  _internals: { sha256Hex, hmacSha256, deriveSigningKey, parseListObjectsV2, encodeKey, canonicalQueryOf }
 };
