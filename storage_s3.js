@@ -92,11 +92,15 @@ function toBuffer(body) {
  */
 function createS3Client(config, fetchImpl) {
   const cfg = config || {};
-  const endpoint = String(cfg.endpoint || '').replace(/\/+$/, '');
-  const region = String(cfg.region || 'us-east-1');
-  const bucket = String(cfg.bucket || '');
-  const accessKeyId = String(cfg.accessKeyId || '');
-  const secretAccessKey = String(cfg.secretAccessKey || '');
+  // 環境変数へコピー＆ペーストで値を入れると、末尾に改行や空白が紛れることが
+  // あります（2026-11-15 の本番障害の原因: keyID 末尾の改行が Authorization
+  // ヘッダーへ混入し、Headers.append が例外を投げて全リクエストが失敗した）。
+  // ここで必ず前後の空白・改行を取り除いてから使います。
+  const endpoint = String(cfg.endpoint || '').trim().replace(/\/+$/, '');
+  const region = String(cfg.region || 'us-east-1').trim();
+  const bucket = String(cfg.bucket || '').trim();
+  const accessKeyId = String(cfg.accessKeyId || '').trim();
+  const secretAccessKey = String(cfg.secretAccessKey || '').trim();
   if (!endpoint || !bucket || !accessKeyId || !secretAccessKey) {
     throw new Error('s3 storage: endpoint / bucket / accessKeyId / secretAccessKey are all required');
   }
